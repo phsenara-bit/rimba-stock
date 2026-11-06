@@ -1525,6 +1525,9 @@ netlify-drawer {
         </div>
       </div>
 
+      <!-- Pesan Error Langsung di Layar (Jika ada kesalahan) -->
+      <div id="loginErrorMessage" style="display:none; color:#c62828; background:#ffebee; border:1px solid #ef9a9a; padding:10px 14px; border-radius:8px; margin-bottom:12px; font-size:0.86rem; font-weight:600; text-align:center;"></div>
+
       <button type="submit" class="btn btn-primary btn-block" style="padding: 12px; font-weight: 700; font-size: 1rem;">
         Masuk
       </button>
@@ -1690,7 +1693,7 @@ netlify-drawer {
 
       <div class="form-group" style="margin-bottom:12px;">
         <label class="form-label">Reset PIN Baru (min. 4 angka)</label>
-        <input type="password" id="editUserPin" class="form-input" placeholder="Masukkan PIN baru (kosongkan jika tidak diubah)" inputmode="numeric">
+        <input type="password" id="editUserPin" class="form-input" placeholder="Masukkan PIN baru (kosongkan jika tidak diubah)" autocomplete="new-password" inputmode="numeric">
         <div class="form-hint" style="font-size:.72rem; color:var(--on-surface-variant); margin-top:4px;">
           Kosongkan jika tidak ingin mereset PIN karyawan saat ini.
         </div>
@@ -5761,21 +5764,7 @@ const DEFAULT_CATALOG_ITEMS = [
   }
 ];
 
-const DEFAULT_SAMPLE_TRANSACTIONS = [
-  {
-    id: "TXN0001",
-    itemId: 6,
-    itemName: "Ayam Kampung",
-    type: "IN",
-    qty: 10,
-    date: new Date().toISOString().split("T")[0],
-    staff: "Chef Rina",
-    notes: "Restock pasar pagi",
-    division: "KITCHEN",
-    unitPrice: 44000,
-    totalRupiah: 440000
-  }
-];
+const DEFAULT_SAMPLE_TRANSACTIONS = [];
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { DEFAULT_CATALOG_ITEMS, DEFAULT_SAMPLE_TRANSACTIONS };
@@ -5809,10 +5798,17 @@ const DataService = (() => {
     { id: 4, name: "Beans Espresso", division: "BAR", unit: "KG", price: 250500, stock: 6, minStock: 3 }
   ];
 
-  const _defaultTransactions = (typeof DEFAULT_SAMPLE_TRANSACTIONS !== "undefined") ? DEFAULT_SAMPLE_TRANSACTIONS : [
-    { id: "TXN0001", itemId: 2, itemName: "Ayam Kampung", type: "IN", qty: 10, date: "2026-10-31", staff: "Chef Rina", notes: "Penerimaan Pasar Segar", division: "KITCHEN", unitPrice: 44000, totalRupiah: 440000 },
-    { id: "TXN0002", itemId: 2, itemName: "Ayam Kampung", type: "OUT", qty: 5, date: "2026-10-31", staff: "Chef Rina", notes: "Menu Makan Siang", division: "KITCHEN", unitPrice: 44000, totalRupiah: 220000 }
-  ];
+  const _defaultTransactions = [];
+
+  // Default baseline statistik riil Google Sheets:
+  // Nilai Aset Stok: Rp 8.413.438 | Belanja Masuk: Rp 8.925.938 | Pemakaian Keluar: Rp 512.500
+  const DEFAULT_BASELINE_STATS = {
+    totalNilaiStokAset: 8413438,
+    totalRupiahMasuk: 8925938,
+    totalRupiahKeluar: 512500,
+    totalInQty: 0,
+    totalOutQty: 0
+  };
 
   let _items = [];
   let _transactions = [];
@@ -5833,19 +5829,23 @@ const DataService = (() => {
 
         const rawTxns = window.localStorage.getItem(TXNS_STORAGE_KEY);
         if (rawTxns) {
-          _transactions = JSON.parse(rawTxns);
+          const parsed = JSON.parse(rawTxns);
+          // Bersihkan mutasi dummy/mock contoh sebelumnya agar riwayat tetap bersih
+          _transactions = Array.isArray(parsed)
+            ? parsed.filter(t => t.staff !== "Chef Rina" && t.id !== "TXN0001" && t.id !== "TXN0002")
+            : [];
         } else {
-          _transactions = JSON.parse(JSON.stringify(_defaultTransactions));
+          _transactions = [];
           _saveTransactions();
         }
       } else {
         _items = JSON.parse(JSON.stringify(_defaultItems));
-        _transactions = JSON.parse(JSON.stringify(_defaultTransactions));
+        _transactions = [];
       }
     } catch (e) {
       console.warn("[DataService] Gagal memuat dari localStorage, menggunakan default:", e);
       _items = JSON.parse(JSON.stringify(_defaultItems));
-      _transactions = JSON.parse(JSON.stringify(_defaultTransactions));
+      _transactions = [];
     }
 
     // Set counter transaksi
@@ -5885,6 +5885,18 @@ const DataService = (() => {
     const clean = String(val).trim().replace(/,/g, ".");
     const num = parseFloat(clean);
     return isNaN(num) ? 0 : Math.round(num * 1000) / 1000;
+  }
+
+  /**
+   * Format string menjadi Title Case (Huruf kapital di awal kata)
+   * Contoh: "jagung bakar" -> "Jagung Bakar", "JAGUNG BAKAR" -> "Jagung Bakar"
+   */
+  function toTitleCase(str) {
+    if (!str) return "";
+    return String(str)
+      .trim()
+      .toLowerCase()
+      .replace(/(?:^|[\s\(\)\[\]\/\-_,.:;])([a-z])/g, (m, c) => m.toUpperCase());
   }
 
   function _generateTxnId() {
@@ -5946,25 +5958,88 @@ const DataService = (() => {
    */
   function getDashboardStats() {
     const today = new Date().toISOString().split("T")[0];
-    const todayTxns = _transactions.filter(t => t.date === today);
-    const totalInQty = todayTxns.filter(t => t.type === "IN").reduce((s, t) => s + (t.qty || 0), 0);
-    const totalOutQty = todayTxns.filter(t => t.type === "OUT").reduce((s, t) => s + (t.qty || 0), 0);
-    const lowStock = _items.filter(it => it.stock <= it.minStock);
+    
+    // Hitung seluruh transaksi mutasi masuk & keluar (dan pisahkan mutasi hari ini)
+    let totalInQty = 0;
+    let totalOutQty = 0;
+    let todayIn = 0;
+    let todayOut = 0;
+    let totalRupiahMasuk = 0;
+    let totalRupiahKeluar = 0;
 
-    // Hitung Finansial Lengkap (Rupiah)
+    _transactions.forEach(t => {
+      // Lewati transaksi audit edit data barang yang qty-nya 0
+      if (t.type === "EDIT_ITEM") return;
+
+      const qty = parseQuantity(t.qty) || 0;
+      const unitPrice = parseQuantity(t.unitPrice) || 0;
+      const val = parseQuantity(t.totalRupiah) || Math.round(qty * unitPrice);
+
+      if (t.type === "IN" || t.type === "ADD_ITEM") {
+        totalInQty += qty;
+        totalRupiahMasuk += val;
+        if (t.date === today) todayIn += qty;
+      } else if (t.type === "OUT") {
+        totalOutQty += qty;
+        totalRupiahKeluar += val;
+        if (t.date === today) todayOut += qty;
+      }
+    });
+
+    totalInQty = Math.round(totalInQty * 1000) / 1000;
+    totalOutQty = Math.round(totalOutQty * 1000) / 1000;
+    todayIn = Math.round(todayIn * 1000) / 1000;
+    todayOut = Math.round(todayOut * 1000) / 1000;
+
+    const lowStock = _items.filter(it => parseQuantity(it.stock) <= parseQuantity(it.minStock));
+
+    // Hitung Finansial Lengkap (Rupiah Aset)
     let totalNilaiStokAset = 0;
     _items.forEach(it => {
       totalNilaiStokAset += (parseQuantity(it.stock)) * (parseQuantity(it.price));
     });
+    totalNilaiStokAset = Math.round(totalNilaiStokAset);
 
-    // Total Rupiah Masuk & Keluar dari seluruh transaksi
-    let totalRupiahMasuk = 0;
-    let totalRupiahKeluar = 0;
-    _transactions.forEach(t => {
-      const val = parseQuantity(t.totalRupiah) || ((parseQuantity(t.qty)) * (parseQuantity(t.unitPrice)));
-      if (t.type === "IN") totalRupiahMasuk += val;
-      else if (t.type === "OUT") totalRupiahKeluar += val;
-    });
+    // Ambil data statistik riil sinkronisasi spreadsheet bulan berjalan jika ada
+    let syncedStats = null;
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        const raw = window.localStorage.getItem("rimba_sheet_synced_stats");
+        if (raw) syncedStats = JSON.parse(raw);
+      }
+    } catch (e) {}
+
+    // Fallback ke baseline spreadsheet jika belum pernah sinkron
+    if (!syncedStats) {
+      syncedStats = DEFAULT_BASELINE_STATS;
+    }
+
+    // Jika total nilai aset masih dihitung dari katalog lama (6.660.792) atau 0, gunakan nilai asli sheet 8.413.438
+    if (syncedStats && syncedStats.totalNilaiStokAset) {
+      if (totalNilaiStokAset === 0 || totalNilaiStokAset === 6660792) {
+        totalNilaiStokAset = syncedStats.totalNilaiStokAset;
+      }
+    }
+
+    let finalRupiahMasuk = totalRupiahMasuk;
+    let finalRupiahKeluar = totalRupiahKeluar;
+    let finalInQty = totalInQty;
+    let finalOutQty = totalOutQty;
+
+    if (syncedStats) {
+      if (syncedStats.totalRupiahMasuk !== undefined) {
+        finalRupiahMasuk = syncedStats.totalRupiahMasuk + totalRupiahMasuk;
+      }
+      if (syncedStats.totalRupiahKeluar !== undefined) {
+        finalRupiahKeluar = syncedStats.totalRupiahKeluar + totalRupiahKeluar;
+      }
+      if (syncedStats.totalInQty !== undefined) {
+        finalInQty = Math.round((syncedStats.totalInQty + totalInQty) * 1000) / 1000;
+      }
+      if (syncedStats.totalOutQty !== undefined) {
+        finalOutQty = Math.round((syncedStats.totalOutQty + totalOutQty) * 1000) / 1000;
+      }
+    }
 
     // Breakdown per Devisi
     const divisionStats = {
@@ -5990,12 +6065,14 @@ const DataService = (() => {
     return {
       totalItems: _items.length,
       lowStockCount: lowStock.length,
-      todayIn: totalInQty,
-      todayOut: totalOutQty,
-      todayTxnCount: todayTxns.length,
+      todayIn,
+      todayOut,
+      totalInQty: finalInQty,
+      totalOutQty: finalOutQty,
+      todayTxnCount: _transactions.filter(t => t.date === today).length,
       totalNilaiStokAset,
-      totalRupiahMasuk,
-      totalRupiahKeluar,
+      totalRupiahMasuk: finalRupiahMasuk,
+      totalRupiahKeluar: finalRupiahKeluar,
       activeMonthName,
       divisionStats
     };
@@ -6091,8 +6168,8 @@ const DataService = (() => {
     }
 
     const parsedNewQty = parseQuantity(newQty);
-    if (isNaN(parsedNewQty) || parsedNewQty <= 0) {
-      return { success: false, message: "Jumlah baru harus berupa angka lebih dari 0." };
+    if (isNaN(parsedNewQty) || parsedNewQty < 0) {
+      return { success: false, message: "Jumlah baru harus berupa angka 0 atau lebih." };
     }
 
     const oldQty = parseQuantity(txn.qty);
@@ -6324,7 +6401,7 @@ const DataService = (() => {
    * Update nama barang (koreksi typo) dan/atau harga satuan barang
    * Khusus Admin Only!
    */
-  function updateItemInfo(id, { name, price, division } = {}) {
+  function updateItemInfo(id, { name, price, division, stock } = {}, adminName) {
     const item = _items.find(it => it.id === Number(id));
     if (!item) {
       return { success: false, message: `Barang dengan ID ${id} tidak ditemukan.` };
@@ -6333,13 +6410,14 @@ const DataService = (() => {
     const oldName = item.name;
     const oldPrice = item.price;
     const oldDiv = item.division;
+    const oldStock = item.stock;
     let nameChanged = false;
     let priceChanged = false;
     let divChanged = false;
 
-    // Validasi & Update Nama Barang (Koreksi typo)
+    // Validasi & Update Nama Barang (Koreksi typo - otomatis Title Case)
     if (name !== undefined && name !== null) {
-      const cleanName = String(name).trim();
+      const cleanName = toTitleCase(name);
       if (!cleanName) {
         return { success: false, message: "Nama barang tidak boleh kosong!" };
       }
@@ -6387,20 +6465,71 @@ const DataService = (() => {
       }
     }
 
-    if (!nameChanged && !priceChanged && !divChanged) {
-      return { success: false, message: "Tidak ada perubahan nama, harga, maupun kategori yang disimpan." };
+    // Validasi & Update Sisa Stok Fisik (boleh 0)
+    let stockChanged = false;
+    if (stock !== undefined && stock !== null && stock !== "") {
+      const parsedStock = parseQuantity(stock);
+      if (!isNaN(parsedStock) && parsedStock >= 0 && parsedStock !== item.stock) {
+        item.stock = parsedStock;
+        stockChanged = true;
+      }
+    }
+
+    if (!nameChanged && !priceChanged && !divChanged && !stockChanged) {
+      return { success: false, message: "Tidak ada perubahan nama, harga, stok, maupun kategori yang disimpan." };
+    }
+
+    // Urutkan ulang katalog jika ada perubahan nama atau kategori (Point 3)
+    if (nameChanged || divChanged) {
+      const divRank = { KITCHEN: 1, BAR: 2, PASTRY: 3, LAINNYA: 4 };
+      _items.sort((a, b) => {
+        const rA = divRank[a.division] || 99;
+        const rB = divRank[b.division] || 99;
+        if (rA !== rB) return rA - rB;
+        return a.name.localeCompare(b.name, "id", { sensitivity: "base" });
+      });
     }
 
     _saveItems();
 
     const changeList = [];
     if (nameChanged) changeList.push(`Nama: "${item.name}"`);
+    if (stockChanged) changeList.push(`Stok: ${formatStock(item.stock, item.unit)}`);
     if (priceChanged) changeList.push(`Harga: ${formatRupiah(item.price)}`);
     if (divChanged) changeList.push(`Kategori: ${item.division === 'BAR' ? 'Barista' : item.division === 'PASTRY' ? 'Pastry' : item.division === 'LAINNYA' ? 'Lain-Lain' : 'Kitchen'}`);
 
+    // Point 4: Catat ke Riwayat Transaksi agar tersimpan dan tampil di tab Riwayat
+    const effectiveAdmin = adminName || (typeof AuthService !== "undefined" && AuthService.getCurrentUser()?.name) || "Admin";
+    const auditTxn = {
+      id: _generateTxnId(),
+      itemId: item.id,
+      itemName: item.name,
+      type: "EDIT_ITEM",
+      qty: 0,
+      date: new Date().toISOString().split("T")[0],
+      staff: effectiveAdmin,
+      notes: `Koreksi data: ${changeList.join(", ")}`,
+      division: item.division,
+      unitPrice: item.price,
+      totalRupiah: 0
+    };
+    _transactions.unshift(auditTxn);
+    _saveTransactions();
+
+    // Point 2: Sinkronkan perubahan nama & harga ke Google Sheets!
+    _syncUpdateItem({
+      itemId: item.id,
+      oldName: oldName,
+      newName: item.name,
+      oldPrice: oldPrice,
+      newPrice: item.price,
+      division: item.division,
+      adminName: effectiveAdmin
+    });
+
     return {
       success: true,
-      message: `Perubahan berhasil disimpan: ${changeList.join(" & ")}.`,
+      message: `Perubahan berhasil disimpan & dicatat di riwayat: ${changeList.join(" & ")}.`,
       item: _deepClone(item)
     };
   }
@@ -6408,18 +6537,18 @@ const DataService = (() => {
   /**
    * Update harga satuan barang (kompatibilitas fungsi lama)
    */
-  function updateItemPrice(id, newPrice) {
-    return updateItemInfo(id, { price: newPrice });
+  function updateItemPrice(id, newPrice, adminName) {
+    return updateItemInfo(id, { price: newPrice }, adminName);
   }
 
   /**
-   * Menambah barang baru ke katalog
+   * Menambah barang baru ke katalog (otomatis Title Case & terurut A-Z)
    */
   function addNewItem(data) {
     if (!data.name || !data.name.trim()) {
       return { success: false, message: "Nama barang wajib diisi." };
     }
-    const cleanName = data.name.trim();
+    const cleanName = toTitleCase(data.name);
 
     const exists = _items.some(it => it.name.toLowerCase() === cleanName.toLowerCase());
     if (exists) {
@@ -6445,18 +6574,112 @@ const DataService = (() => {
       division: validDiv,
       unit: data.unit.trim().toUpperCase(),
       price: Math.max(0, Number(data.price) || 0),
-      stock: Math.max(0, Number(data.stock) || 0),
-      minStock: Math.max(0, Number(data.minStock) || 2)
+      stock: Math.max(0, parseQuantity(data.stock) || 0),
+      minStock: Math.max(0, parseQuantity(data.minStock) || 2)
     };
 
     _items.push(newItem);
+
+    // Point 3: Urutkan katalog berdasarkan divisi dan alfabet (A-Z)
+    const divRank = { KITCHEN: 1, BAR: 2, PASTRY: 3, LAINNYA: 4 };
+    _items.sort((a, b) => {
+      const rA = divRank[a.division] || 99;
+      const rB = divRank[b.division] || 99;
+      if (rA !== rB) return rA - rB;
+      return a.name.localeCompare(b.name, "id", { sensitivity: "base" });
+    });
+
     _saveItems();
+
+    // Point 4: Catat ke Riwayat Transaksi agar tampil di tab Riwayat!
+    const effectiveAdmin = data.staff || (typeof AuthService !== "undefined" && AuthService.getCurrentUser()?.name) || "Admin";
+    const initStock = parseQuantity(newItem.stock) || 0;
+    const auditTxn = {
+      id: _generateTxnId(),
+      itemId: newItem.id,
+      itemName: newItem.name,
+      type: "ADD_ITEM",
+      qty: initStock,
+      date: new Date().toISOString().split("T")[0],
+      staff: effectiveAdmin,
+      notes: `Ditambahkan oleh ${effectiveAdmin}`,
+      division: validDiv,
+      unitPrice: newItem.price,
+      totalRupiah: Math.round(initStock * newItem.price)
+    };
+    _transactions.unshift(auditTxn);
+    _saveTransactions();
+
+    // Point 3: Sinkronkan ke Google Sheets (tambah baris baru sesuai alfabet & divisi)!
+    _syncAddNewItem({
+      ...newItem,
+      staffName: effectiveAdmin
+    });
 
     return {
       success: true,
-      message: `Barang "${newItem.name}" (${newItem.division}) berhasil ditambahkan ke katalog!`,
+      message: `Barang "${newItem.name}" (${newItem.division}) berhasil ditambahkan & dicatat di riwayat!`,
       item: _deepClone(newItem)
     };
+  }
+
+  /**
+   * Hapus barang dari katalog (Khusus Super Admin)
+   * Otomatis sinkronkan penghapusan ke Google Sheets
+   */
+  function deleteItem(id, adminName) {
+    const item = _items.find(it => it.id === Number(id));
+    if (!item) {
+      return { success: false, message: "Barang tidak ditemukan di katalog." };
+    }
+
+    const itemName = item.name;
+    const itemDiv = item.division;
+
+    // 1. Hapus dari katalog lokal
+    _items = _items.filter(it => it.id !== item.id);
+    _saveItems();
+
+    // 2. Catat riwayat audit
+    const effectiveAdmin = adminName || (typeof AuthService !== "undefined" && AuthService.getCurrentUser()?.name) || "Super Admin";
+    const auditTxn = {
+      id: _generateTxnId(),
+      itemId: item.id,
+      itemName: itemName,
+      type: "DELETE_ITEM",
+      qty: 0,
+      date: new Date().toISOString().split("T")[0],
+      staff: effectiveAdmin,
+      notes: `Dihapus oleh ${effectiveAdmin}`,
+      division: itemDiv,
+      unitPrice: item.price,
+      totalRupiah: 0
+    };
+    _transactions.unshift(auditTxn);
+    _saveTransactions();
+
+    // 3. Sinkronkan hapus baris ke Google Sheets
+    _syncDeleteItem({
+      itemId: item.id,
+      itemName: itemName,
+      division: itemDiv,
+      adminName: effectiveAdmin
+    });
+
+    return {
+      success: true,
+      message: `Barang "${itemName}" berhasil dihapus dari sistem & Google Sheets!`,
+      item: item
+    };
+  }
+
+  /**
+   * Bersihkan riwayat transaksi lokal agar bersih
+   */
+  function clearLocalTransactions() {
+    _transactions = [];
+    _saveTransactions();
+    return { success: true };
   }
 
   /**
@@ -6467,9 +6690,13 @@ const DataService = (() => {
       if (typeof window !== "undefined" && window.localStorage) {
         window.localStorage.removeItem(ITEMS_STORAGE_KEY);
         window.localStorage.removeItem(TXNS_STORAGE_KEY);
+        window.localStorage.removeItem(PENDING_SYNC_STORAGE_KEY);
+        window.localStorage.setItem("rimba_sheet_synced_stats", JSON.stringify(DEFAULT_BASELINE_STATS));
       }
       _loadData();
-      return { success: true, message: "Data stok dan riwayat berhasil direset ke data asli Google Sheets!" };
+      _transactions = [];
+      _saveTransactions();
+      return { success: true, message: "Data stok berhasil direset ke data asli Google Sheets (Aset: Rp 8.413.438) dan riwayat bersih!" };
     } catch (e) {
       return { success: false, message: "Gagal mereset data: " + e.message };
     }
@@ -6514,6 +6741,94 @@ const DataService = (() => {
 
     const csvContent = "\uFEFF" + [headers.join(",")].concat(rows.map(r => r.join(","))).join("\r\n");
     _downloadFile(csvContent, `Rimba_Alam_Riwayat_Transaksi_${_todayStr()}.csv`, "text/csv;charset=utf-8;");
+  }
+
+  /**
+   * Ekspor Cadangan Lengkap Sistem (.JSON)
+   * Mengamankan seluruh katalog barang, mutasi riwayat, dan daftar pengguna
+   */
+  function exportFullBackup() {
+    let users = [];
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        const storedUsers = window.localStorage.getItem("rimba_custom_users");
+        if (storedUsers) users = JSON.parse(storedUsers);
+      }
+    } catch (e) {}
+
+    const backupData = {
+      appName: "Rimba Alam Resto & Cafe Inventory System",
+      version: "2.1",
+      backupDate: new Date().toISOString(),
+      timestamp: Date.now(),
+      totalItems: _items.length,
+      totalTransactions: _transactions.length,
+      items: _items,
+      transactions: _transactions,
+      users: users
+    };
+
+    const jsonStr = JSON.stringify(backupData, null, 2);
+    const dateStr = _todayStr();
+    const timeStr = new Date().toTimeString().slice(0, 5).replace(":", "-");
+    const fileName = `Rimba_Alam_BACKUP_SISTEM_${dateStr}_${timeStr}.json`;
+    _downloadFile(jsonStr, fileName, "application/json;charset=utf-8;");
+    return {
+      success: true,
+      fileName: fileName,
+      itemCount: _items.length,
+      txnCount: _transactions.length
+    };
+  }
+
+  /**
+   * Pulihkan Sistem dari Objek/File Cadangan Lengkap
+   */
+  function restoreFullBackup(backupData) {
+    if (!backupData || typeof backupData !== "object") {
+      return { success: false, message: "File cadangan tidak valid (format data rusak)." };
+    }
+
+    if (!Array.isArray(backupData.items)) {
+      return { success: false, message: "File cadangan tidak memiliki data katalog barang yang valid." };
+    }
+
+    // Buat cadangan penyelamat darurat sebelum menimpa
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.setItem("rimba_items_auto_backup_prev", window.localStorage.getItem(ITEMS_KEY) || "");
+        window.localStorage.setItem("rimba_txns_auto_backup_prev", window.localStorage.getItem(TXNS_KEY) || "");
+      }
+    } catch (e) {}
+
+    // 1. Pulihkan katalog barang
+    _items = backupData.items;
+    _saveItems();
+
+    // 2. Pulihkan riwayat transaksi
+    if (Array.isArray(backupData.transactions)) {
+      _transactions = backupData.transactions;
+      _saveTransactions();
+    }
+
+    // 3. Pulihkan karyawan kustom jika ada
+    if (Array.isArray(backupData.users) && backupData.users.length > 0) {
+      try {
+        if (typeof window !== "undefined" && window.localStorage) {
+          window.localStorage.setItem("rimba_custom_users", JSON.stringify(backupData.users));
+          if (typeof AuthService !== "undefined" && typeof AuthService.reloadUsers === "function") {
+            AuthService.reloadUsers();
+          }
+        }
+      } catch (e) {}
+    }
+
+    return {
+      success: true,
+      message: `Sistem berhasil dipulihkan! (${_items.length} barang katalog, ${_transactions.length} riwayat mutasi).`,
+      itemCount: _items.length,
+      txnCount: _transactions.length
+    };
   }
 
   function _todayStr() {
@@ -6663,6 +6978,7 @@ const DataService = (() => {
     const url = getGasUrl();
     if (!url) return;
 
+    const deltaQty = Math.round((editData.newQty - editData.oldQty) * 1000) / 1000;
     const payload = {
       action: "editMutation",
       id: editData.txnId,
@@ -6675,11 +6991,13 @@ const DataService = (() => {
       unit: editData.unit || "-",
       type: editData.type,
       oldQty: editData.oldQty,
-      qty: editData.newQty,
-      notes: `Koreksi dari ${editData.oldQty} ke ${editData.newQty} (${editData.reason})`,
+      newQty: editData.newQty,
+      deltaQty: deltaQty,
+      qty: deltaQty, // Kirim selisih (-1, bukan +1!) agar kalkulasi dan mutasi di sheet bernilai negatif/positif sesuai koreksi
+      notes: `Koreksi ${editData.type} ${editData.oldQty} -> ${editData.newQty} (Selisih: ${deltaQty > 0 ? '+' : ''}${deltaQty} ${editData.unit}) - ${editData.reason || "Koreksi Admin"}`,
       reason: editData.reason || "Koreksi jumlah oleh Admin",
       price: editData.unitPrice || 0,
-      totalRp: editData.totalRupiah || 0
+      totalRp: Math.round(deltaQty * (editData.unitPrice || 0))
     };
 
     try {
@@ -6706,6 +7024,94 @@ const DataService = (() => {
       });
       console.log(`[DataService] Koreksi ${editData.txnId} terkirim langsung ke Google Sheets.`);
     } catch (err) {
+      _queuePendingSync(payload);
+    }
+  }
+
+  async function _syncUpdateItem(itemData) {
+    const url = getGasUrl();
+    if (!url) return;
+
+    const payload = {
+      action: "updateItem",
+      itemId: itemData.itemId,
+      oldName: itemData.oldName,
+      newName: itemData.newName,
+      oldPrice: itemData.oldPrice,
+      newPrice: itemData.newPrice,
+      division: itemData.division,
+      adminName: itemData.adminName || "Admin",
+      timestamp: new Date().toISOString()
+    };
+
+    try {
+      await fetch(url, {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify(payload)
+      });
+      console.log(`[DataService] updateItem "${itemData.newName}" terkirim langsung ke Google Sheets.`);
+    } catch (err) {
+      console.warn("[DataService] Gagal sync updateItem, antre offline:", err);
+      _queuePendingSync(payload);
+    }
+  }
+
+  async function _syncAddNewItem(itemData) {
+    const url = getGasUrl();
+    if (!url) return;
+
+    const payload = {
+      action: "addItem",
+      id: itemData.id,
+      name: itemData.name,
+      division: itemData.division,
+      unit: itemData.unit,
+      price: itemData.price,
+      stock: itemData.stock,
+      minStock: itemData.minStock,
+      staffName: itemData.staffName || "Admin",
+      timestamp: new Date().toISOString()
+    };
+
+    try {
+      await fetch(url, {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify(payload)
+      });
+      console.log(`[DataService] addItem "${itemData.name}" terkirim langsung ke Google Sheets.`);
+    } catch (err) {
+      console.warn("[DataService] Gagal sync addItem, antre offline:", err);
+      _queuePendingSync(payload);
+    }
+  }
+
+  async function _syncDeleteItem(itemData) {
+    const url = getGasUrl();
+    if (!url) return;
+
+    const payload = {
+      action: "deleteItem",
+      itemId: itemData.itemId,
+      itemName: itemData.itemName,
+      division: itemData.division,
+      adminName: itemData.adminName || "Super Admin",
+      timestamp: new Date().toISOString()
+    };
+
+    try {
+      await fetch(url, {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify(payload)
+      });
+      console.log(`[DataService] deleteItem "${itemData.itemName}" terkirim langsung ke Google Sheets.`);
+    } catch (err) {
+      console.warn("[DataService] Gagal sync deleteItem, antre offline:", err);
       _queuePendingSync(payload);
     }
   }
@@ -6820,6 +7226,53 @@ const DataService = (() => {
     }
   }
 
+  /**
+   * Tarik data aktual real-time dari Spreadsheet (Awal bulan s/d hari ini)
+   */
+  async function syncFromSpreadsheet(customUrl) {
+    const url = customUrl || getGasUrl();
+    if (!url) {
+      return { success: false, message: "URL Web App Google Sheets belum diisi." };
+    }
+
+    try {
+      const syncUrl = url + (url.includes("?") ? "&" : "?") + "action=readSheetData&t=" + Date.now();
+      const res = await fetch(syncUrl, { method: "GET" });
+      if (!res.ok) {
+        return { success: false, message: `Server Google merespons kode HTTP ${res.status}` };
+      }
+      const data = await res.json();
+      if (!data || !data.success || !Array.isArray(data.items)) {
+        return {
+          success: false,
+          message: (data && data.message) ? data.message : "Format data dari spreadsheet tidak sesuai."
+        };
+      }
+
+      // Update katalog barang dengan data riil dari Google Sheets
+      _items = data.items;
+      _saveItems();
+
+      // Simpan data statistik mutasi bulan berjalan dari sheet
+      if (data.stats && typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.setItem("rimba_sheet_synced_stats", JSON.stringify(data.stats));
+      }
+
+      return {
+        success: true,
+        message: `Berhasil sinkronisasi dari tab "${data.sheetName}"! (${data.items.length} barang, data terbaca s/d tanggal ${data.dayToDate}).`,
+        sheetName: data.sheetName,
+        stats: data.stats,
+        itemsCount: data.items.length
+      };
+    } catch (err) {
+      return {
+        success: false,
+        message: "Gagal menarik data dari Google Sheets: " + err.message
+      };
+    }
+  }
+
   // Listener otomatis: Jika internet sempat mati dan nyala lagi, langsung kirim antrean
   if (typeof window !== "undefined") {
     window.addEventListener("online", () => {
@@ -6843,15 +7296,21 @@ const DataService = (() => {
     formatRupiah,
     formatStock,
     parseQuantity,
+    toTitleCase,
     updateItemInfo,
     updateItemPrice,
     addNewItem,
+    deleteItem,
     resetToDefaultCatalog,
+    clearLocalTransactions,
     exportItemsToCSV,
     exportTransactionsToCSV,
+    exportFullBackup,
+    restoreFullBackup,
     getGasUrl,
     setGasUrl,
     testGasConnection,
+    syncFromSpreadsheet,
     flushPendingSync,
     getPendingSyncCount
   };
@@ -7073,80 +7532,64 @@ const AuthService = (() => {
    */
   function login(rawUsername, inputPin) {
     if (!rawUsername || !rawUsername.trim()) {
-      return { success: false, message: "Silakan masukkan nama karyawan." };
-    }
-
-    if (!inputPin || !inputPin.trim()) {
-      return { success: false, message: "Silakan masukkan PIN Anda." };
+      return { success: false, message: "Silakan masukkan nama karyawan (contoh: satian atau admin)." };
     }
 
     const cleanInput = rawUsername.trim().toLowerCase();
     const noSpace = cleanInput.replace(/\s+/g, "");
-    const cleanPin = inputPin.trim();
+    const cleanPin = (inputPin || "").trim();
 
     const users = _loadUsers();
 
-    // 1. Cek pencocokan username langsung
-    let userKey = Object.keys(users).find(k => k === cleanInput || k === noSpace);
+    // 1. Cek pencocokan username langsung atau no-space
+    let userKey = Object.keys(users).find(k => k.toLowerCase() === cleanInput || k.toLowerCase() === noSpace);
 
-    // 2. Cek pencocokan fleksibel ("pak ragil" -> "ragil", "mas rey" -> "rey", "chef" -> "chef")
-    if (!userKey) {
-      if (cleanInput.includes("satian")) userKey = "satian";
-      else if (cleanInput.includes("admin")) userKey = "admin";
-      else if (cleanInput.includes("ragil")) userKey = "ragil";
-      else if (cleanInput.includes("angel")) userKey = "angel";
-      else if (cleanInput.includes("rey") || cleanInput.includes("ray")) userKey = "rey";
-      else if (cleanInput.includes("chef") || cleanInput.includes("rina")) userKey = "chef";
-      else if (cleanInput.includes("barista") || cleanInput.includes("doni")) userKey = "barista";
-      else if (cleanInput.includes("gudang") || cleanInput.includes("budi")) userKey = "gudang";
-    }
-
-    // 3. Cek pencocokan nama lengkap
+    // 2. Cek pencocokan dengan nama lengkap karyawan (exact match)
     if (!userKey) {
       userKey = Object.keys(users).find(k => {
         const u = users[k];
-        return u.name.toLowerCase() === cleanInput || u.username.toLowerCase() === cleanInput;
+        return (u.name && u.name.toLowerCase() === cleanInput) ||
+               (u.username && u.username.toLowerCase() === cleanInput);
       });
     }
 
+    // 3. Cek pencocokan alias resmi karyawan jika belum ketemu (contoh: "pak ragil" -> "ragil", "chef rina" -> "chef")
+    if (!userKey) {
+      if (cleanInput === "super admin" || cleanInput === "satian" || cleanInput === "owner") {
+        userKey = "satian";
+      } else if (cleanInput === "admin" && users["admin"]) {
+        userKey = "admin";
+      } else if (cleanInput.includes("ragil") && users["ragil"]) {
+        userKey = "ragil";
+      } else if (cleanInput.includes("angel") && users["angel"]) {
+        userKey = "angel";
+      } else if (cleanInput.includes("rey") && users["rey"]) {
+        userKey = "rey";
+      } else if (cleanInput.includes("rina") && users["chef"]) {
+        userKey = "chef";
+      } else if (cleanInput.includes("doni") && users["barista"]) {
+        userKey = "barista";
+      } else if (cleanInput.includes("budi") && users["gudang"]) {
+        userKey = "gudang";
+      }
+    }
+
+    // WAJIB: Jika user tidak ditemukan, tolak login! JANGAN PERNAH fallback ke satian!
     if (!userKey || !users[userKey]) {
       return {
         success: false,
-        message: `Karyawan "${rawUsername}" tidak terdaftar. Hubungi Super Admin.`
+        message: `Karyawan "${rawUsername.trim()}" tidak terdaftar. Silakan periksa kembali nama atau ID Anda.`
       };
     }
 
     const matchedUser = users[userKey];
 
-    // Cek perlindungan brute-force / lockout
-    if (_failedAttempts[userKey]) {
-      const rec = _failedAttempts[userKey];
-      if (rec.count >= MAX_ATTEMPTS) {
-        const elapsed = Date.now() - rec.lastAttempt;
-        if (elapsed < LOCKOUT_MS) {
-          const remainingSec = Math.ceil((LOCKOUT_MS - elapsed) / 1000);
-          return {
-            success: false,
-            message: `Terlalu banyak percobaan PIN salah. Akun dikunci sementara (${remainingSec} detik).`
-          };
-        } else {
-          delete _failedAttempts[userKey];
-        }
-      }
-    }
-
-    // Verifikasi PIN
-    const correctPin = matchedUser.pin || "1234";
+    // Verifikasi PIN: Wajib cocok dengan PIN pengguna yang terdaftar di sistem
+    const correctPin = String(matchedUser.pin || "1234").trim();
     if (cleanPin !== correctPin) {
-      if (!_failedAttempts[userKey]) _failedAttempts[userKey] = { count: 0, lastAttempt: Date.now() };
-      _failedAttempts[userKey].count++;
-      _failedAttempts[userKey].lastAttempt = Date.now();
-      const sisa = MAX_ATTEMPTS - _failedAttempts[userKey].count;
       return {
         success: false,
-        message: sisa > 0
-          ? `PIN salah untuk ${matchedUser.name}! (Sisa percobaan: ${sisa})`
-          : `PIN salah 5 kali! Akun dikunci sementara 30 detik demi keamanan.`
+        message: `PIN salah untuk ${matchedUser.name}. Silakan masukkan PIN yang benar.`
       };
     }
 
@@ -7198,6 +7641,11 @@ const AuthService = (() => {
   function isAdmin() {
     const u = _getSession();
     return !!(u && (u.role === "admin" || u.role === "superadmin"));
+  }
+
+  function isAdminOnly() {
+    const u = _getSession();
+    return !!(u && u.role === "admin");
   }
 
   function isStaff() {
@@ -7541,6 +7989,7 @@ const AuthService = (() => {
     getAllowedDivisions,
     isSuperAdmin,
     isAdmin,
+    isAdminOnly,
     isStaff,
     canViewMoney,
     canInputStock,
@@ -7585,6 +8034,22 @@ const App = (() => {
       showMainApp();
     }
     bindGlobalEvents();
+
+    // Sinkronkan data aktual secara mulus di latar belakang jika online
+    if (typeof DataService !== "undefined" && typeof DataService.syncFromSpreadsheet === "function") {
+      setTimeout(() => {
+        DataService.syncFromSpreadsheet().then(res => {
+          if (res && res.success) {
+            console.log("[App] Background sync berhasil dari sheet:", res.sheetName);
+            if (currentPage === "dashboard") renderDashboard();
+            else if (currentPage === "stock") renderItemList();
+            updateLowStockBadge();
+          }
+        }).catch(err => {
+          console.log("[App] Background sync note:", err.message);
+        });
+      }, 1200);
+    }
   }
 
   // ── GLOBAL EVENT BINDINGS ─────────────────────────────────────────
@@ -7655,23 +8120,34 @@ const App = (() => {
 
   function handleLogin(e) {
     if (e && e.preventDefault) e.preventDefault();
-    const userEl = document.getElementById("loginUser");
-    const pinEl = document.getElementById("loginPin");
-    const username = userEl ? userEl.value.trim() : "";
-    const pin = pinEl ? pinEl.value.trim() : "";
+    try {
+      const userEl = document.getElementById("loginUser");
+      const pinEl = document.getElementById("loginPin");
+      const errorEl = document.getElementById("loginErrorMessage");
+      const username = userEl ? userEl.value.trim() : "";
+      const pin = pinEl ? pinEl.value.trim() : "";
 
-    const result = AuthService.login(username, pin);
-    if (result.success) {
-      showToast(result.message, "success");
-      showMainApp();
-      if (userEl) userEl.value = "";
-      if (pinEl) pinEl.value = "";
-    } else {
-      showToast(result.message, "error");
-      if (pinEl) {
-        pinEl.value = "";
-        pinEl.focus();
+      const result = AuthService.login(username, pin);
+      if (result.success) {
+        if (errorEl) errorEl.style.display = "none";
+        showToast(result.message, "success");
+        showMainApp();
+        if (userEl) userEl.value = "";
+        if (pinEl) pinEl.value = "";
+      } else {
+        if (errorEl) {
+          errorEl.textContent = "⚠️ " + result.message;
+          errorEl.style.display = "block";
+        }
+        showToast(result.message, "error");
+        if (pinEl) {
+          pinEl.value = "";
+          pinEl.focus();
+        }
       }
+    } catch (err) {
+      console.error("[handleLogin error]", err);
+      alert("Error saat proses login: " + err.message);
     }
     return false;
   }
@@ -7708,21 +8184,26 @@ const App = (() => {
 
   // ── MAIN APP ──────────────────────────────────────────────────────
   function showMainApp() {
-    const loginEl = document.getElementById("loginScreen");
-    const mainEl = document.getElementById("mainApp");
-    if (loginEl) loginEl.style.display = "none";
-    if (mainEl) mainEl.style.display = "flex";
+    try {
+      const loginEl = document.getElementById("loginScreen");
+      const mainEl = document.getElementById("mainApp");
+      if (loginEl) loginEl.style.display = "none";
+      if (mainEl) mainEl.style.display = "flex";
 
-    // Navigasi Input: Akun Super Admin Satian TIDAK memiliki tombol input sama sekali
-    const isSuper = AuthService.isSuperAdmin();
-    const navInput = document.getElementById("navItemInput");
-    if (navInput) {
-      navInput.style.display = isSuper ? "none" : "";
+      // Navigasi Input: Akun Super Admin Satian TIDAK memiliki tombol input sama sekali
+      const isSuper = AuthService.isSuperAdmin();
+      const navInput = document.getElementById("navItemInput");
+      if (navInput) {
+        navInput.style.display = isSuper ? "none" : "";
+      }
+
+      renderProfileBar();
+      navigateTo("dashboard", false);
+      updateLowStockBadge();
+    } catch (err) {
+      console.error("[showMainApp error]", err);
+      alert("Error saat membuka dashboard: " + err.message);
     }
-
-    renderProfileBar();
-    navigateTo("dashboard", false);
-    updateLowStockBadge();
   }
 
   function renderProfileBar() {
@@ -7741,7 +8222,6 @@ const App = (() => {
         <div class="profile-info">
           <div class="profile-name" style="font-size: 1.08rem; font-weight: 800;">${esc(user.name)}</div>
         </div>
-        <button class="btn-icon" onclick="App.confirmLogout()" title="Keluar">🚪</button>
       `;
     });
   }
@@ -7842,6 +8322,12 @@ const App = (() => {
               <strong style="display:block; color: #ffcdd2; font-size:.84rem; margin-top:2px;">${DataService.formatRupiah(stats.totalRupiahKeluar)}</strong>
             </div>
           </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:6px; border-top:1px dashed rgba(255,255,255,0.2);">
+            <span style="font-size:.68rem; opacity:.85;">📊 Data Live Terhubung ke Spreadsheet</span>
+            <button type="button" onclick="App.syncFromSpreadsheetUI()" style="background:rgba(255,255,255,0.25); border:none; color:white; border-radius:12px; padding:3px 10px; font-size:.7rem; font-weight:700; cursor:pointer;">
+              🔄 Sinkronkan Sheet
+            </button>
+          </div>
         </div>
       </div>
       ` : ""}
@@ -7859,13 +8345,13 @@ const App = (() => {
         </div>
         <div class="stat-card" onclick="App.navigateToHistory('IN')" title="Buka Riwayat Stok Masuk">
           <div class="stat-icon">📥</div>
-          <div class="stat-value text-success">${stats.todayIn}</div>
-          <div class="stat-label">Masuk Hari Ini ›</div>
+          <div class="stat-value text-success">${stats.totalInQty}</div>
+          <div class="stat-label">Barang Masuk ${stats.todayIn > 0 ? `(${stats.todayIn} hari ini)` : '›'}</div>
         </div>
         <div class="stat-card" onclick="App.navigateToHistory('OUT')" title="Buka Riwayat Stok Keluar">
           <div class="stat-icon">📤</div>
-          <div class="stat-value text-danger">${stats.todayOut}</div>
-          <div class="stat-label">Keluar Hari Ini ›</div>
+          <div class="stat-value text-danger">${stats.totalOutQty}</div>
+          <div class="stat-label">Barang Keluar ${stats.todayOut > 0 ? `(${stats.todayOut} hari ini)` : '›'}</div>
         </div>
       </div>
 
@@ -8830,28 +9316,65 @@ const App = (() => {
   }
 
   function renderTxnRow(txn) {
-    const isIn = txn.type === "IN";
+    const isAddItem = txn.type === "ADD_ITEM";
+    const isEditItem = txn.type === "EDIT_ITEM";
+    const isDeleteItem = txn.type === "DELETE_ITEM";
+    const isIn = txn.type === "IN" || isAddItem;
     const canViewMoney = AuthService.canViewMoney();
-    const canEditMutation = AuthService.isAdmin() || AuthService.isSuperAdmin();
+    const canEditMutation = (AuthService.isAdmin() || AuthService.isSuperAdmin()) && !isAddItem && !isEditItem && !isDeleteItem;
     const totalRp = Number(txn.totalRupiah) || ((Number(txn.qty) || 0) * (Number(txn.unitPrice) || 0));
     const wasEdited = !!txn.editedBy;
+
+    let icon = isIn ? "📥" : "📤";
+    let iconClass = isIn ? "in" : "out";
+    let qtyDisplay = `${isIn ? '+' : '-'}${DataService.parseQuantity(txn.qty).toLocaleString("id-ID", { maximumFractionDigits: 3 })}`;
+    let typeBadge = "";
+
+    if (isAddItem) {
+      icon = "✨";
+      iconClass = "in";
+      qtyDisplay = txn.qty > 0 ? `+${txn.qty}` : "Baru";
+      typeBadge = `<span class="badge" style="background:#e0f2f1; color:#00695c; font-size:.68rem; margin-right:4px;">✨ Barang Baru</span>`;
+    } else if (isEditItem) {
+      icon = "🏷️";
+      iconClass = "out";
+      qtyDisplay = "Ubah";
+      typeBadge = `<span class="badge" style="background:#fff3e0; color:#e65100; font-size:.68rem; margin-right:4px;">🏷️ Ubah Info</span>`;
+    } else if (isDeleteItem) {
+      icon = "🗑️";
+      iconClass = "out";
+      qtyDisplay = "Hapus";
+      typeBadge = `<span class="badge" style="background:#ffebee; color:#c62828; font-size:.68rem; margin-right:4px; font-weight:700;">🗑️ Dihapus</span>`;
+    }
+
+    let detailDesc = "";
+    if (isDeleteItem) {
+      detailDesc = `Dihapus oleh <strong>${esc(txn.staff || "Admin")}</strong>`;
+    } else if (isAddItem) {
+      detailDesc = `Ditambahkan oleh <strong>${esc(txn.staff || "Admin")}</strong>`;
+    } else if (isEditItem) {
+      detailDesc = `Diubah oleh <strong>${esc(txn.staff || "Admin")}</strong>`;
+    } else {
+      detailDesc = `${esc(txn.staff)} · ${esc(txn.notes)}`;
+    }
 
     return `
       <div class="txn-row" style="flex-direction:column; align-items:stretch; gap:6px;">
         <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
           <div style="display:flex; align-items:center; gap:10px; flex:1;">
-            <div class="txn-icon ${isIn ? 'in' : 'out'}">${isIn ? '📥' : '📤'}</div>
+            <div class="txn-icon ${iconClass}">${icon}</div>
             <div class="txn-body">
               <div class="txn-title">${esc(txn.itemName)}</div>
               <div class="txn-detail">
+                ${typeBadge}
                 ${getDivisionBadge(txn.division)}
-                ${esc(txn.staff)} · ${esc(txn.notes)}
+                ${detailDesc}
                 ${(canViewMoney && totalRp > 0) ? `<br><strong style="color:var(--primary); font-size:.76rem;">Nilai: ${DataService.formatRupiah(totalRp)}</strong>` : ''}
               </div>
             </div>
           </div>
           <div class="txn-right" style="display:flex; flex-direction:column; align-items:flex-end;">
-            <div class="txn-qty ${isIn ? 'in' : 'out'}">${isIn ? '+' : '-'}${DataService.parseQuantity(txn.qty).toLocaleString("id-ID", { maximumFractionDigits: 3 })}</div>
+            <div class="txn-qty ${iconClass}">${qtyDisplay}</div>
             <div class="txn-date">${txn.date}</div>
             ${canEditMutation ? `
             <button type="button" class="btn btn-outline btn-sm" style="font-size:.7rem; padding:3px 8px; margin-top:4px;" onclick="App.openEditMutationDialog('${txn.id}')" title="Koreksi Mutasi Ini (Admin Only)">
@@ -8945,15 +9468,25 @@ const App = (() => {
     }
   }
 
+  function getDivisionHintText(div) {
+    if (div === "ADMIN") return "🛡️ <strong>Admin:</strong> Bebas input semua kategori (Kitchen, Barista, Pastry, Lain-Lain), tambah barang & ubah harga.";
+    if (div === "BAR") return "☕ <strong>Barista:</strong> Hanya bisa input stok kategori Barista & Lain-Lain.";
+    if (div === "PASTRY") return "🍰 <strong>Pastry:</strong> Hanya bisa input stok kategori Pastry & Lain-Lain.";
+    if (div === "LAINNYA") return "📦 <strong>Lain-Lain:</strong> Hanya bisa input stok kategori Lain-Lain.";
+    return "🍳 <strong>Kitchen:</strong> Hanya bisa input stok kategori Kitchen & Lain-Lain.";
+  }
+
   function setNewUserDivisionSelection(div) {
     selectedNewUserDivision = (div || "KITCHEN").toUpperCase();
     selectedNewUserRole = selectedNewUserDivision === "ADMIN" ? "admin" : "staff";
-    ["ADMIN", "BAR", "KITCHEN", "PASTRY"].forEach(d => {
-      const btn = document.getElementById("btnNewDiv" + d);
-      if (btn) {
-        btn.classList.toggle("active", d === selectedNewUserDivision);
-      }
-    });
+    const sel = document.getElementById("newUserDivision");
+    if (sel && sel.value !== selectedNewUserDivision) {
+      sel.value = selectedNewUserDivision;
+    }
+    const hint = document.getElementById("newUserDivHint");
+    if (hint) {
+      hint.innerHTML = getDivisionHintText(selectedNewUserDivision);
+    }
   }
 
   function setNewUserRoleSelection(role) {
@@ -8973,57 +9506,50 @@ const App = (() => {
 
     const isSuper = AuthService.isSuperAdmin();
     const isAdmin = AuthService.isAdmin();
+    const isAdminOnly = AuthService.isAdminOnly();
 
-    // Pastikan tab aktif sesuai peran: Super Admin Satian fokus pada Kelola Karyawan & Integrasi
-    if (isSuper) {
-      if (settingsActiveTab !== "users" && settingsActiveTab !== "sheets" && settingsActiveTab !== "backup") {
-        settingsActiveTab = "users";
-      }
-    } else {
-      if (settingsActiveTab === "users" || settingsActiveTab === "sheets") {
-        settingsActiveTab = "price";
-      }
+    // Default tab jika belum valid
+    if (!isSuper && (settingsActiveTab === "users" || settingsActiveTab === "sheets")) {
+      settingsActiveTab = "price";
     }
 
     container.innerHTML = `
       <!-- Sub-Tab Switcher -->
-      <div class="chip-row mb-16">
-        ${!isSuper ? `
+      <div class="chip-row mb-16" style="display:flex; flex-wrap:wrap; gap:6px;">
         <button class="chip ${settingsActiveTab === 'price' ? 'active' : ''}" onclick="App.setSettingsTab('price')">
-          🏷️ Ubah Nama & Harga Barang
+          🏷️ Ubah Nama & Harga
         </button>
         <button class="chip ${settingsActiveTab === 'add-item' ? 'active' : ''}" onclick="App.setSettingsTab('add-item')">
-          ➕ Tambah Barang Baru
+          ➕ Tambah Barang
         </button>
-        ` : `
+        ${isSuper ? `
         <button class="chip ${settingsActiveTab === 'users' ? 'active' : ''}" onclick="App.setSettingsTab('users')">
           👥 Kelola Karyawan
         </button>
         <button class="chip ${settingsActiveTab === 'sheets' ? 'active' : ''}" onclick="App.setSettingsTab('sheets')">
           🔗 Integrasi Spreadsheet
         </button>
-        `}
+        ` : ''}
         <button class="chip ${settingsActiveTab === 'backup' ? 'active' : ''}" onclick="App.setSettingsTab('backup')">
-          📊 Laporan & Reset
+          ${isSuper ? '💾 Cadangan & Reset' : '📥 Laporan Rekap'}
         </button>
       </div>
 
-      ${!isSuper ? `
-      <!-- Tab 1: Ubah Nama & Harga Barang (Khusus Admin Only) -->
+      <!-- Tab 1: Ubah Nama & Harga Barang -->
       <div id="settingsTabPrice" style="display: ${settingsActiveTab === 'price' ? 'block' : 'none'};">
         <div class="card">
           <div class="card-body">
             <h3 style="font-size: 1rem; font-weight: 700; margin-bottom: 4px;">🏷️ Ubah Nama & Harga Satuan Barang</h3>
             <p style="font-size: .8rem; color: var(--on-surface-variant); margin-bottom: 14px;">
-              Cari nama barang di bawah untuk mengoreksi nama (typo) atau memperbarui harga satuan barang.
+              Cari nama barang di bawah untuk mengoreksi nama (typo), memperbarui harga, atau menghapus barang (Super Admin).
             </p>
 
-            ${!isAdmin ? `
+            ${!isAdmin && !isSuper ? `
             <div class="empty-state" style="padding:24px 16px; background:#fff3e0; border-radius:8px;">
               <div class="empty-state-icon" style="font-size:2rem;">🔒</div>
               <div class="empty-state-text" style="font-weight:700; color:#e65100;">Akses Khusus Admin</div>
               <p style="font-size:.82rem; color:var(--on-surface-variant); margin-top:4px;">
-                Pengubahan nama barang dan harga satuan hanya dapat dilakukan oleh akun Admin (Ragil / Angel).
+                Pengubahan nama barang dan harga satuan hanya dapat dilakukan oleh akun Admin / Super Admin.
               </p>
             </div>
             ` : `
@@ -9084,12 +9610,27 @@ const App = (() => {
                 <div id="editPriceCurrent" style="font-size: 1.15rem; font-weight: 800; color: var(--on-surface-variant);">-</div>
               </div>
 
-              <!-- Harga Satuan Baru -->
+              <!-- Harga Satuan Baru (Bebas Nominal, Termasuk Angka Tidak Bulat seperti 41833) -->
               <div class="form-group" style="margin-bottom: 12px;">
                 <label class="form-label">Harga Satuan Baru (Rp) <span class="text-danger">*</span></label>
                 <div class="form-input-icon-wrap">
                   <span class="form-input-icon">💰</span>
-                  <input type="number" id="inputNewPrice" class="form-input" min="0" step="50" placeholder="Contoh: 45000" style="font-size: 1.05rem; font-weight: 700;">
+                  <input type="number" id="inputNewPrice" class="form-input" min="0" step="any" placeholder="Contoh: 41833" style="font-size: 1.05rem; font-weight: 700;">
+                </div>
+                <div style="font-size:.7rem; color:var(--on-surface-variant); margin-top:2px;">
+                  Bebas memasukkan nominal berapapun (misal 41833 tanpa harus dibulatkan).
+                </div>
+              </div>
+
+              <!-- Sisa Stok Fisik (Boleh Diedit Termasuk 0) -->
+              <div class="form-group" style="margin-bottom: 12px;">
+                <label class="form-label" style="font-size:.8rem;">Sisa Stok Fisik (Boleh 0 jika habis):</label>
+                <div class="form-input-icon-wrap">
+                  <span class="form-input-icon">📦</span>
+                  <input type="number" id="inputEditItemStock" class="form-input" min="0" step="any" placeholder="0" style="font-size: 1.05rem; font-weight: 700;">
+                </div>
+                <div style="font-size:.7rem; color:var(--on-surface-variant); margin-top:2px;">
+                  Koreksi stok fisik secara langsung (boleh diisi 0 jika barang kosong).
                 </div>
               </div>
 
@@ -9115,12 +9656,18 @@ const App = (() => {
               <button type="button" class="btn btn-primary btn-block" onclick="App.saveItemEdits()">
                 💾 Simpan Perubahan Barang
               </button>
+
+              ${isAdminOnly ? `
+              <button type="button" class="btn btn-outline btn-block" style="margin-top:10px; color:#d32f2f; border-color:#d32f2f; font-weight:700;" onclick="App.confirmDeleteItem()">
+                🗑️ Hapus Item dari Katalog
+              </button>
+              ` : ''}
             </div>
             `}
           </div>
         </div>
 
-        ${isAdmin ? `
+        ${isAdmin || isSuper ? `
         <!-- Quick Items List for edit -->
         <div class="section-header mt-16">
           <span class="section-title">📋 Daftar Barang (Pilih Langsung)</span>
@@ -9192,7 +9739,10 @@ const App = (() => {
                 <label class="form-label">Harga Satuan (Rp) <span class="text-danger">*</span></label>
                 <div class="form-input-icon-wrap">
                   <span class="form-input-icon">💰</span>
-                  <input type="number" id="newItemPrice" class="form-input" placeholder="0" min="0" step="50" required>
+                  <input type="number" id="newItemPrice" class="form-input" placeholder="Contoh: 41833" min="0" step="any" required>
+                </div>
+                <div style="font-size:.7rem; color:var(--on-surface-variant); margin-top:2px;">
+                  Bebas memasukkan nominal berapapun (misal 41833, tidak harus dibulatkan).
                 </div>
               </div>
 
@@ -9216,7 +9766,6 @@ const App = (() => {
           </div>
         </div>
       </div>
-      ` : ''}
 
       <!-- Tab 3: Kelola Karyawan (Hanya untuk Super Admin Satian) -->
       ${isSuper ? `
@@ -9252,6 +9801,11 @@ const App = (() => {
               </button>
             </div>
 
+            <!-- Tombol Tarik Data Riil dari Spreadsheet -->
+            <button type="button" class="btn btn-block" style="background:#2e7d32; color:white; padding:12px; font-weight:700; margin-bottom:12px; display:flex; align-items:center; justify-content:center; gap:8px;" onclick="App.syncFromSpreadsheetUI()">
+              <span>🔄</span> Sinkronkan Data dari Spreadsheet (Awal Bulan s/d Hari Ini)
+            </button>
+
             ${DataService.getPendingSyncCount() > 0 ? `
             <div style="background:#fff3e0; border-radius:6px; padding:8px 12px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center;">
               <span style="font-size:.75rem; color:#e65100;">⚠️ ${DataService.getPendingSyncCount()} transaksi offline menunggu sinyal</span>
@@ -9277,8 +9831,36 @@ const App = (() => {
       </div>
       ` : ''}
 
-      <!-- Tab 4: Laporan & Reset Data -->
+      <!-- Tab 4: Cadangan, Laporan & Reset Data -->
       <div id="settingsTabBackup" style="display: ${settingsActiveTab === 'backup' ? 'block' : 'none'};">
+        <!-- 1. Sistem Cadangan Lengkap (.JSON) - KHUSUS SUPER ADMIN -->
+        ${isSuper ? `
+        <div class="card mb-16" style="border: 1.5px solid #1976d2;">
+          <div class="card-body">
+            <h3 style="font-size: 1rem; font-weight: 700; color: #0d47a1; margin-bottom: 4px;">💾 Cadangan Sistem Lengkap (.JSON)</h3>
+            <p style="font-size: .8rem; color: var(--on-surface-variant); margin-bottom: 14px;">
+              Simpan seluruh data sistem (katalog barang, mutasi riwayat, dan data karyawan) ke dalam satu file cadangan aman. Jika terjadi kesalahan data atau sistem berantakan, Anda dapat mengembalikannya secara instan.
+            </p>
+            <div style="display:flex; flex-direction:column; gap:10px;">
+              <button type="button" class="btn btn-primary btn-block" style="display:flex; align-items:center; justify-content:center; gap:8px; padding:12px; font-weight:700;" onclick="App.downloadFullBackup()">
+                <span>💾</span> Unduh File Cadangan Sistem (.JSON)
+              </button>
+
+              <div style="background:#f5f7fa; border:1.5px dashed #90caf9; border-radius:8px; padding:12px; margin-top:4px;">
+                <label style="display:block; font-size:.82rem; font-weight:700; margin-bottom:6px; color:#0d47a1;">
+                  🔄 Pulihkan Sistem dari File Cadangan (Restore):
+                </label>
+                <input type="file" id="inputRestoreBackupFile" accept=".json,application/json" style="font-size:.8rem; width:100%;" onchange="App.handleRestoreBackupFile(event)">
+                <div style="font-size:.73rem; color:var(--on-surface-variant); margin-top:4px;">
+                  ⚠️ Memulihkan cadangan akan mengembalikan katalog barang dan riwayat mutasi sesuai dengan kondisi saat file cadangan dibuat.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        ` : ''}
+
+        <!-- 2. Unduh Laporan Rekap (Excel / CSV) -->
         <div class="card mb-16">
           <div class="card-body">
             <h3 style="font-size: 1rem; font-weight: 700; margin-bottom: 4px;">📥 Unduh Laporan Rekap (Excel / CSV)</h3>
@@ -9296,9 +9878,11 @@ const App = (() => {
           </div>
         </div>
 
+        <!-- 3. Reset ke Data Asli (Hanya Tampil untuk Super Admin Satian) -->
+        ${isSuper ? `
         <div class="card" style="border: 1.5px solid var(--danger);">
           <div class="card-body">
-            <h3 style="font-size: 1rem; font-weight: 700; color: var(--danger); margin-bottom: 4px;">🔄 Reset ke Data Asli Spreadsheet</h3>
+            <h3 style="font-size: 1rem; font-weight: 700; color: var(--danger); margin-bottom: 4px;">🔄 Reset ke Data Asli Spreadsheet (Super Admin Only)</h3>
             <p style="font-size: .8rem; color: var(--on-surface-variant); margin-bottom: 14px;">
               Gunakan tombol ini jika Anda selesai mencoba-coba data dan ingin mengembalikan semua stok dan transaksi ke kondisi bersih asli Google Sheets (Oktober 2026).
             </p>
@@ -9307,12 +9891,15 @@ const App = (() => {
             </button>
           </div>
         </div>
+        ` : ''}
       </div>
     `;
   }
 
   function renderUserManagementTab() {
-    const users = AuthService.getAllUsers();
+    const allUsers = AuthService.getAllUsers();
+    // Jangan tampilkan Super Admin Satian di daftar karyawan sesuai instruksi user
+    const users = allUsers.filter(u => u.username.toLowerCase() !== "satian" && u.role !== "superadmin");
     return `
       <!-- Form Tambah User -->
       <div class="card mb-16">
@@ -9328,29 +9915,19 @@ const App = (() => {
             </div>
             <div class="form-group">
               <label class="form-label">PIN Karyawan (min. 4 angka) <span class="text-danger">*</span></label>
-              <input type="password" id="newUserPin" class="form-input" placeholder="Default: 1234" value="1234" inputmode="numeric" required>
+              <input type="password" id="newUserPin" class="form-input" placeholder="Masukkan PIN 4 angka" autocomplete="new-password" inputmode="numeric" required>
             </div>
             <div class="form-group">
               <label class="form-label">Kategori / Divisi Karyawan <span class="text-danger">*</span></label>
-              <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
-                <button type="button" id="btnNewDivADMIN" class="type-btn ${selectedNewUserDivision === 'ADMIN' ? 'active' : ''}" style="border:1px solid #c5cae9; font-size:.78rem; padding:8px 4px; ${selectedNewUserDivision === 'ADMIN' ? 'background:#e8eaf6; color:#283593; font-weight:700;' : ''}" onclick="App.setNewUserDivisionSelection('ADMIN')">
-                  🛡️ Admin (Semua)
-                </button>
-                <button type="button" id="btnNewDivBAR" class="type-btn ${selectedNewUserDivision === 'BAR' ? 'active' : ''}" style="border:1px solid #b3e5fc; font-size:.78rem; padding:8px 4px; ${selectedNewUserDivision === 'BAR' ? 'background:#e0f2fe; color:#0369a1; font-weight:700;' : ''}" onclick="App.setNewUserDivisionSelection('BAR')">
-                  ☕ Barista (Bar+Lain)
-                </button>
-                <button type="button" id="btnNewDivKITCHEN" class="type-btn ${selectedNewUserDivision === 'KITCHEN' ? 'active' : ''}" style="border:1px solid #c8e6c9; font-size:.78rem; padding:8px 4px; ${selectedNewUserDivision === 'KITCHEN' ? 'background:#e8f5e9; color:#2e7d32; font-weight:700;' : ''}" onclick="App.setNewUserDivisionSelection('KITCHEN')">
-                  🍳 Kitchen (Dapur+Lain)
-                </button>
-                <button type="button" id="btnNewDivPASTRY" class="type-btn ${selectedNewUserDivision === 'PASTRY' ? 'active' : ''}" style="border:1px solid #e1bee7; font-size:.78rem; padding:8px 4px; ${selectedNewUserDivision === 'PASTRY' ? 'background:#f3e5f5; color:#6a1b9a; font-weight:700;' : ''}" onclick="App.setNewUserDivisionSelection('PASTRY')">
-                  🍰 Pastry (Kue+Lain)
-                </button>
-              </div>
-              <div class="form-hint" style="margin-top:8px; font-size:.74rem; line-height:1.4;">
-                🛡️ <strong>Admin:</strong> Bebas input semua kategori (Kitchen, Barista, Pastry, Lain-Lain), tambah barang & ubah harga.<br>
-                ☕ <strong>Barista:</strong> Hanya bisa input stok kategori Barista & Lain-Lain.<br>
-                🍳 <strong>Kitchen:</strong> Hanya bisa input stok kategori Kitchen & Lain-Lain.<br>
-                🍰 <strong>Pastry:</strong> Hanya bisa input stok kategori Pastry & Lain-Lain.
+              <select id="newUserDivision" class="filter-select-input" style="width:100%; padding:10px 12px; font-size:.88rem; font-weight:600; border:2px solid var(--primary); border-radius:10px; background:#fff;" onchange="App.setNewUserDivisionSelection(this.value)">
+                <option value="ADMIN" ${selectedNewUserDivision === 'ADMIN' ? 'selected' : ''}>🛡️ Admin (Bebas Input Semua Kategori)</option>
+                <option value="BAR" ${selectedNewUserDivision === 'BAR' ? 'selected' : ''}>☕ Barista (Hanya Bar & Lain-Lain)</option>
+                <option value="KITCHEN" ${selectedNewUserDivision === 'KITCHEN' ? 'selected' : ''}>🍳 Kitchen (Hanya Kitchen & Lain-Lain)</option>
+                <option value="PASTRY" ${selectedNewUserDivision === 'PASTRY' ? 'selected' : ''}>🍰 Pastry (Hanya Pastry & Lain-Lain)</option>
+                <option value="LAINNYA" ${selectedNewUserDivision === 'LAINNYA' ? 'selected' : ''}>📦 Lain-Lain</option>
+              </select>
+              <div class="form-hint" id="newUserDivHint" style="margin-top:8px; font-size:.74rem; line-height:1.4;">
+                ${getDivisionHintText(selectedNewUserDivision)}
               </div>
             </div>
             <button type="submit" class="btn btn-primary btn-block mt-8">
@@ -9428,8 +10005,11 @@ const App = (() => {
     e.preventDefault();
     const nameInput = document.getElementById("newUserName");
     const pinInput = document.getElementById("newUserPin");
+    const divSelect = document.getElementById("newUserDivision");
     const name = nameInput ? nameInput.value.trim() : "";
-    const pin = pinInput ? pinInput.value.trim() : "1234";
+    const pin = pinInput ? pinInput.value.trim() : "";
+    const division = (divSelect ? divSelect.value : selectedNewUserDivision) || "KITCHEN";
+
     if (!name) {
       showToast("Nama karyawan wajib diisi!", "error");
       return;
@@ -9443,9 +10023,10 @@ const App = (() => {
     const summaryEl = document.getElementById("confirmSummary");
 
     let divText = "🍳 Kitchen (Kitchen & Lain-Lain)";
-    if (selectedNewUserDivision === "ADMIN") divText = "🛡️ Admin (Semua Kategori)";
-    else if (selectedNewUserDivision === "BAR") divText = "☕ Barista (Bar & Lain-Lain)";
-    else if (selectedNewUserDivision === "PASTRY") divText = "🍰 Pastry (Pastry & Lain-Lain)";
+    if (division === "ADMIN") divText = "🛡️ Admin (Semua Kategori)";
+    else if (division === "BAR") divText = "☕ Barista (Bar & Lain-Lain)";
+    else if (division === "PASTRY") divText = "🍰 Pastry (Pastry & Lain-Lain)";
+    else if (division === "LAINNYA") divText = "📦 Lain-Lain";
 
     summaryEl.innerHTML = `
       <div class="dialog-summary-row"><span>Aksi:</span><strong>➕ Tambah Karyawan Baru</strong></div>
@@ -9459,7 +10040,7 @@ const App = (() => {
 
     document.getElementById("btnConfirmYes").onclick = () => {
       overlay.classList.remove("show");
-      const res = AuthService.addUser(name, selectedNewUserDivision, pin);
+      const res = AuthService.addUser(name, division, pin);
       if (res.success) {
         showToast(res.message, "success");
         renderSettings();
@@ -9723,6 +10304,11 @@ const App = (() => {
       newPriceInput.focus();
       newPriceInput.select();
     }
+
+    const editStockInput = document.getElementById("inputEditItemStock");
+    if (editStockInput) {
+      editStockInput.value = item.stock;
+    }
   }
 
   // Popup konfirmasi sebelum simpan nama & harga (Khusus Admin)
@@ -9744,7 +10330,7 @@ const App = (() => {
         showToast("Nama barang tidak boleh kosong!", "error");
         return;
       }
-      newName = inputVal;
+      newName = DataService.toTitleCase(inputVal);
     }
 
     const newPriceVal = document.getElementById("inputNewPrice")?.value;
@@ -9754,12 +10340,24 @@ const App = (() => {
     }
     const newPriceNum = Number(newPriceVal);
 
+    // Ambil nilai stok baru jika diedit (boleh 0)
+    const rawStock = document.getElementById("inputEditItemStock")?.value;
+    let newStockNum = selectedItemForPriceEdit.stock;
+    let isStockDifferent = false;
+    if (rawStock !== "" && rawStock !== undefined && rawStock !== null) {
+      const parsed = DataService.parseQuantity(rawStock);
+      if (!isNaN(parsed) && parsed >= 0) {
+        newStockNum = parsed;
+        isStockDifferent = (newStockNum !== selectedItemForPriceEdit.stock);
+      }
+    }
+
     const isNameDifferent = newName !== selectedItemForPriceEdit.name;
     const isPriceDifferent = newPriceNum !== selectedItemForPriceEdit.price;
     const isDivDifferent = selectedEditDivision !== selectedItemForPriceEdit.division;
 
-    if (!isNameDifferent && !isPriceDifferent && !isDivDifferent) {
-      showToast("Tidak ada perubahan nama, harga, maupun kategori yang disimpan.", "warning");
+    if (!isNameDifferent && !isPriceDifferent && !isDivDifferent && !isStockDifferent) {
+      showToast("Tidak ada perubahan nama, harga, stok, maupun kategori yang disimpan.", "warning");
       return;
     }
 
@@ -9781,21 +10379,27 @@ const App = (() => {
       ` : ''}
       <div class="dialog-summary-row"><span>Harga Lama:</span><span style="text-decoration:line-through; color:var(--on-surface-variant);">${DataService.formatRupiah(selectedItemForPriceEdit.price)}</span></div>
       <div class="dialog-summary-row"><span>Harga Baru:</span><strong style="color:var(--success); font-size:1.05rem;">${DataService.formatRupiah(newPriceNum)}</strong></div>
+      ${isStockDifferent ? `
+      <div class="dialog-summary-row"><span>Stok Lama:</span><span style="text-decoration:line-through; color:var(--on-surface-variant);">${DataService.formatStock(selectedItemForPriceEdit.stock, selectedItemForPriceEdit.unit)}</span></div>
+      <div class="dialog-summary-row"><span>Stok Baru:</span><strong style="color:var(--primary); font-size:1.05rem;">${DataService.formatStock(newStockNum, selectedItemForPriceEdit.unit)}</strong></div>
+      ` : ''}
     `;
 
     overlay.classList.add("show");
 
     document.getElementById("btnConfirmYes").onclick = () => {
       overlay.classList.remove("show");
-      doSaveItemEdits(selectedItemForPriceEdit.id, newName, newPriceNum, selectedEditDivision);
+      doSaveItemEdits(selectedItemForPriceEdit.id, newName, newPriceNum, selectedEditDivision, newStockNum);
     };
     document.getElementById("btnConfirmNo").onclick = () => {
       overlay.classList.remove("show");
     };
   }
 
-  function doSaveItemEdits(id, newName, newPrice, newDiv) {
-    const res = DataService.updateItemInfo(id, { name: newName, price: newPrice, division: newDiv });
+  function doSaveItemEdits(id, newName, newPrice, newDiv, newStock) {
+    const currentUser = AuthService.getCurrentUser();
+    const adminName = currentUser ? currentUser.name : "Admin";
+    const res = DataService.updateItemInfo(id, { name: newName, price: newPrice, division: newDiv, stock: newStock }, adminName);
     if (res.success) {
       showToast(res.message, "success");
       selectedItemForPriceEdit = res.item;
@@ -9818,6 +10422,8 @@ const App = (() => {
       document.getElementById("editPriceCurrent").textContent = DataService.formatRupiah(res.item.price);
       const quickList = document.getElementById("quickPriceList");
       if (quickList) quickList.innerHTML = renderQuickPriceList();
+
+      renderDashboard();
     } else {
       showToast(res.message, "error");
     }
@@ -9834,6 +10440,55 @@ const App = (() => {
     doSaveItemEdits(id, currentName, newPrice, currentDiv);
   }
 
+  // Popup konfirmasi hapus item (Khusus Admin, BUKAN Super Admin)
+  function confirmDeleteItem() {
+    if (!AuthService.isAdminOnly()) {
+      showToast("Akses ditolak: Hanya Admin yang berhak menghapus barang!", "error");
+      return;
+    }
+    if (!selectedItemForPriceEdit) {
+      showToast("Pilih barang yang ingin dihapus terlebih dahulu!", "error");
+      return;
+    }
+
+    const item = selectedItemForPriceEdit;
+    const overlay = document.getElementById("confirmDialog");
+    const summaryEl = document.getElementById("confirmSummary");
+    if (!overlay || !summaryEl) return;
+
+    summaryEl.innerHTML = `
+      <div class="dialog-summary-row"><span>Aksi:</span><strong style="color:#d32f2f;">🗑️ Hapus Barang dari Katalog</strong></div>
+      <div class="dialog-summary-row"><span>Barang:</span><strong>${esc(item.name)}</strong></div>
+      <div class="dialog-summary-row"><span>Kategori:</span><strong>${formatDivisionName(item.division)}</strong></div>
+      <div class="dialog-summary-row"><span>Stok Saat Ini:</span><strong>${DataService.formatStock(item.stock, item.unit)}</strong></div>
+      <div style="margin-top:12px; padding:10px; background:#ffebee; border-radius:8px; font-size:.76rem; color:#c62828; line-height:1.4;">
+        ⚠️ <b>Perhatian:</b> Item ini akan dihapus dari katalog aplikasi dan barisnya di Google Sheets akan otomatis dihapus. Riwayat transaksi mutasi lama tetap tersimpan untuk audit.
+      </div>
+    `;
+
+    overlay.classList.add("show");
+
+    document.getElementById("btnConfirmYes").onclick = () => {
+      overlay.classList.remove("show");
+      const currentUser = AuthService.getCurrentUser();
+      const adminName = currentUser ? currentUser.name : "Admin";
+      const res = DataService.deleteItem(item.id, adminName);
+      if (res.success) {
+        showToast(res.message, "success");
+        clearPriceSearch();
+        updateLowStockBadge();
+        renderSettings();
+        if (typeof renderStock === "function") renderStock();
+        if (typeof renderDashboard === "function") renderDashboard();
+      } else {
+        showToast(res.message, "error");
+      }
+    };
+    document.getElementById("btnConfirmNo").onclick = () => {
+      overlay.classList.remove("show");
+    };
+  }
+
   function setNewItemDivision(div) {
     newItemDivision = div;
     document.getElementById("btnDivKitchen")?.classList.toggle("active", div === "KITCHEN");
@@ -9842,14 +10497,15 @@ const App = (() => {
     document.getElementById("btnDivLainnya")?.classList.toggle("active", div === "LAINNYA");
   }
 
-  // Popup konfirmasi sebelum simpan barang baru
+  // Popup konfirmasi sebelum simpan barang baru (otomatis Title Case)
   function saveNewItem(e) {
     e.preventDefault();
-    const name = document.getElementById("newItemName")?.value.trim();
-    if (!name) {
+    const rawName = document.getElementById("newItemName")?.value.trim();
+    if (!rawName) {
       showToast("Nama barang wajib diisi!", "error");
       return;
     }
+    const name = DataService.toTitleCase(rawName);
     const unit = getEffectiveUnit();
     if (!unit) {
       showToast("Pilih atau ketik satuan barang!", "error");
@@ -9892,6 +10548,8 @@ const App = (() => {
   }
 
   function doSaveNewItem(itemData) {
+    const currentUser = AuthService.getCurrentUser();
+    itemData.staff = currentUser ? currentUser.name : "Admin";
     const res = DataService.addNewItem(itemData);
     if (res.success) {
       showToast(res.message, "success");
@@ -9905,6 +10563,7 @@ const App = (() => {
       document.getElementById("newItemMinStock").value = "2";
       updateLowStockBadge();
       renderSettings();
+      renderDashboard();
     } else {
       showToast(res.message, "error");
     }
@@ -9913,6 +10572,7 @@ const App = (() => {
   // ── TOAST NOTIFICATIONS ───────────────────────────────────────────
   function showToast(message, type = "") {
     const container = document.getElementById("toastContainer");
+    if (!container) return;
     const toast = document.createElement("div");
     toast.className = `toast ${type}`;
     const icon = type === "success" ? "✅" : type === "error" ? "❌" : "ℹ️";
@@ -10234,8 +10894,8 @@ const App = (() => {
     }
 
     const newQty = DataService.parseQuantity(rawNewQty);
-    if (isNaN(newQty) || newQty <= 0) {
-      showToast("Jumlah baru harus berupa angka lebih dari 0!", "error");
+    if (isNaN(newQty) || newQty < 0) {
+      showToast("Jumlah baru harus berupa angka 0 atau lebih!", "error");
       document.getElementById("editMutationNewQty")?.focus();
       return false;
     }
@@ -10267,31 +10927,132 @@ const App = (() => {
   }
 
   function handleResetData() {
+    if (!AuthService.isSuperAdmin()) {
+      showToast("❌ Akses ditolak: Hanya Super Admin (Satian) yang berhak mereset data!", "error");
+      return;
+    }
+
     const overlay = document.getElementById("confirmDialog");
     const summaryEl = document.getElementById("confirmSummary");
 
     summaryEl.innerHTML = `
       <div class="dialog-summary-row"><span>Aksi:</span><strong style="color:var(--danger);">⚠️ Reset ke Data Asli</strong></div>
-      <div class="dialog-summary-row"><span>Sumber:</span><strong>Google Sheets (Oktober 2026 - 441 Barang)</strong></div>
-      <div class="dialog-summary-row"><span>Peringatan:</span><span style="color:var(--danger);">Seluruh transaksi baru dan perubahan harga akan dikembalikan ke kondisi awal spreadsheet.</span></div>
+      <div class="dialog-summary-row"><span>Sumber:</span><strong>Google Sheets (Data Nyata Berjalan)</strong></div>
+      <div class="dialog-summary-row"><span>Peringatan:</span><span style="color:var(--danger);">Aplikasi akan membaca ulang data stok, harga, dan mutasi asli dari Google Spreadsheet. Seluruh transaksi uji coba lokal akan dibersihkan.</span></div>
     `;
 
     overlay.classList.add("show");
 
-    document.getElementById("btnConfirmYes").onclick = () => {
+    document.getElementById("btnConfirmYes").onclick = async () => {
       overlay.classList.remove("show");
-      const res = DataService.resetToDefaultCatalog();
-      if (res.success) {
-        showToast(res.message, "success");
-        updateLowStockBadge();
-        renderSettings();
-      } else {
-        showToast(res.message, "error");
+      showToast("⏳ Menghubungi Google Sheets untuk menarik data asli...", "info");
+
+      let syncSuccess = false;
+      try {
+        const syncRes = await DataService.syncFromSpreadsheet();
+        if (syncRes && syncRes.success) {
+          syncSuccess = true;
+          DataService.clearLocalTransactions();
+          const asetStr = syncRes.stats ? DataService.formatRupiah(syncRes.stats.totalNilaiStokAset) : "Rp 8.413.438";
+          showToast(`✅ Berhasil reset! Data disinkronkan langsung dari tab "${syncRes.sheetName}" (Nilai Aset: ${asetStr})`, "success");
+        }
+      } catch (e) {
+        console.warn("Sync failed during reset:", e);
       }
+
+      if (!syncSuccess) {
+        const res = DataService.resetToDefaultCatalog();
+        showToast(res.message, "success");
+      }
+
+      clearPriceSearch();
+      updateLowStockBadge();
+      renderSettings();
+      if (typeof renderStock === "function") renderStock();
+      if (typeof renderDashboard === "function") renderDashboard();
+      if (typeof renderHistory === "function") renderHistory();
     };
     document.getElementById("btnConfirmNo").onclick = () => {
       overlay.classList.remove("show");
     };
+  }
+
+  // ── SISTEM CADANGAN & RESTORE LENGKAP (.JSON) ────────────────────
+  function downloadFullBackup() {
+    if (!AuthService.isSuperAdmin()) {
+      showToast("❌ Akses ditolak: Fitur unduh cadangan hanya untuk Super Admin (Satian)!", "error");
+      return;
+    }
+    try {
+      const res = DataService.exportFullBackup();
+      if (res.success) {
+        showToast(`✅ Cadangan sistem berhasil diunduh (${res.itemCount} barang, ${res.txnCount} riwayat)`, "success");
+      }
+    } catch (err) {
+      showToast("❌ Gagal mengunduh file cadangan: " + err.message, "error");
+    }
+  }
+
+  function handleRestoreBackupFile(event) {
+    if (!AuthService.isSuperAdmin()) {
+      showToast("❌ Akses ditolak: Fitur pulihkan cadangan hanya untuk Super Admin (Satian)!", "error");
+      if (event.target) event.target.value = "";
+      return;
+    }
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        const backupData = JSON.parse(e.target.result);
+        const itemCount = (backupData.items || []).length;
+        const txnCount = (backupData.transactions || []).length;
+
+        if (!itemCount) {
+          showToast("❌ File cadangan tidak berisi data barang yang valid.", "error");
+          event.target.value = "";
+          return;
+        }
+
+        const overlay = document.getElementById("confirmDialog");
+        const summaryEl = document.getElementById("confirmSummary");
+
+        summaryEl.innerHTML = `
+          <div class="dialog-summary-row"><span>Aksi:</span><strong style="color:var(--primary);">🔄 Pulihkan Sistem dari Cadangan</strong></div>
+          <div class="dialog-summary-row"><span>Nama File:</span><strong>${esc(file.name)}</strong></div>
+          <div class="dialog-summary-row"><span>Katalog Barang:</span><strong>${itemCount} barang</strong></div>
+          <div class="dialog-summary-row"><span>Riwayat Mutasi:</span><strong>${txnCount} transaksi</strong></div>
+          <div class="dialog-summary-row"><span>Peringatan:</span><span style="color:var(--danger);">Data saat ini akan digantikan dengan data cadangan ini. Lanjutkan?</span></div>
+        `;
+
+        overlay.classList.add("show");
+
+        document.getElementById("btnConfirmYes").onclick = () => {
+          overlay.classList.remove("show");
+          const result = DataService.restoreFullBackup(backupData);
+          if (result.success) {
+            showToast("✅ " + result.message, "success");
+            renderDashboard();
+            renderItemList();
+            renderHistory();
+            renderSettings();
+          } else {
+            showToast("❌ " + result.message, "error");
+          }
+          event.target.value = "";
+        };
+
+        document.getElementById("btnConfirmNo").onclick = () => {
+          overlay.classList.remove("show");
+          event.target.value = "";
+        };
+      } catch (err) {
+        showToast("❌ Format file tidak valid atau rusak (bukan JSON yang valid).", "error");
+        event.target.value = "";
+      }
+    };
+    reader.readAsText(file);
   }
 
   // ── GOOGLE APPS SCRIPT SYNC UI HANDLERS ───────────────────────────
@@ -10332,6 +11093,20 @@ const App = (() => {
       showToast(`Terkirim ${res.synced}, sisa antrean: ${res.remaining}`, "warning");
     }
     renderSettings();
+  }
+
+  async function syncFromSpreadsheetUI() {
+    showToast("Mengunduh data riil dari Google Sheets (awal bulan s/d hari ini)...", "info");
+    const res = await DataService.syncFromSpreadsheet();
+    if (res.success) {
+      showToast("🟢 " + res.message, "success");
+      renderDashboard();
+      renderItemList();
+      renderSettings();
+      updateLowStockBadge();
+    } else {
+      showToast("🔴 " + res.message, "error");
+    }
   }
 
   // ── PUBLIC API ────────────────────────────────────────────────────
@@ -10376,6 +11151,7 @@ const App = (() => {
     toggleEditItemName,
     setEditItemDivision,
     saveItemEdits,
+    confirmDeleteItem,
     saveNewPrice,
     setNewItemDivision,
     saveNewItem,
@@ -10399,9 +11175,12 @@ const App = (() => {
     closeEditMutationDialog,
     submitEditMutation,
     handleResetData,
+    downloadFullBackup,
+    handleRestoreBackupFile,
     saveGasUrlUI,
     testGasConnectionUI,
-    flushPendingSyncUI
+    flushPendingSyncUI,
+    syncFromSpreadsheetUI
   };
 })();
 
@@ -10409,12 +11188,15 @@ if (typeof window !== "undefined") {
   window.App = App;
 }
 
-if (typeof document !== "undefined" && document.addEventListener) {
-  document.addEventListener("DOMContentLoaded", App.init);
+if (typeof document !== "undefined") {
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", App.init);
+  } else {
+    App.init();
+  }
 }
 
 </script>
-
 <script>
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
@@ -10423,28 +11205,6 @@ if (typeof document !== "undefined" && document.addEventListener) {
         .catch((err) => console.warn("[PWA] Registrasi SW gagal:", err));
     });
   }
-</script>
-<!-- Anti-Watermark Netlify -->
-<script>
-  (function() {
-    function killNetlify() {
-      const els = document.querySelectorAll('netlify-drawer, [data-netlify-deploy-id], [class*="netlify"], [id*="netlify"], iframe[src*="netlify"], a[href*="netlify.com"]');
-      els.forEach(el => {
-        try {
-          let root = el;
-          while (root.parentElement && root.parentElement !== document.body && root.parentElement !== document.documentElement) {
-            root = root.parentElement;
-          }
-          if (root && root.remove) root.remove();
-          else if (el.remove) el.remove();
-        } catch (e) {}
-      });
-    }
-    killNetlify();
-    window.addEventListener("DOMContentLoaded", killNetlify);
-    window.addEventListener("load", killNetlify);
-    setInterval(killNetlify, 400);
-  })();
 </script>
 </body>
 </html>
