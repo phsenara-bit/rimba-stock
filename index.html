@@ -10940,6 +10940,31 @@ const DataService = (() => {
    * Tujuannya supaya semua jalur (baca sheet, tulis mutasi, baca pengguna, ping)
    * ikut terlindungi tanpa mengubah satu per satu pemanggilnya.
    */
+  /**
+   * Bootstrap token dari URL: https://rimbastock.my.id/#token=XXXX
+   * Super Admin cukup kirim link sekali; staf tinggal buka, token tersimpan
+   * otomatis dan URL-nya dibersihkan supaya tidak ikut ter-share.
+   */
+  (function bootstrapTokenFromUrl() {
+    try {
+      if (typeof window === "undefined" || !window.location) return;
+      const raw = String(window.location.hash || "") + "&" + String(window.location.search || "");
+      const m = raw.match(/[?#&]token=([^&\s]+)/);
+      if (!m) return;
+      const tok = decodeURIComponent(m[1]).trim();
+      if (!tok) return;
+      if (typeof window.localStorage !== "undefined") {
+        window.localStorage.setItem(SYNC_TOKEN_STORAGE_KEY, tok);
+      }
+      if (window.history && window.history.replaceState) {
+        window.history.replaceState(null, "", window.location.pathname);
+      }
+      console.log("[DataService] Token sinkronisasi terpasang dari link.");
+    } catch (e) {
+      /* jangan pernah menggagalkan load aplikasi */
+    }
+  })();
+
   (function installGasFetchShim() {
     if (typeof window === "undefined" || !window.fetch || window.__gasFetchShim) return;
     window.__gasFetchShim = true;

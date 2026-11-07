@@ -28,11 +28,23 @@ Yang berubah di aplikasi: ada kolom **Token Sinkronisasi** di Pengaturan, dan se
 request ke `script.google.com` otomatis membawa token. Backend lama mengabaikan field
 `token` — jadi aplikasi tetap jalan normal walau gate belum dipasang.
 
-### 2. Isi token di semua perangkat (gate masih mati)
+### 2. Pasang token di semua perangkat (gate masih mati)
 
-Di tiap HP: **Pengaturan → Token Sinkronisasi → tempel token → Simpan URL**.
+Nggak perlu ngetik. Kirim link ini sekali ke grup WA staf, mereka tinggal buka:
 
-Cek dengan tombol **🔌 Tes Koneksi** — harus tetap hijau.
+```
+https://rimbastock.my.id/#token=abc500a8c4bf8bf4a13e4ab9002c7731
+```
+
+Token langsung tersimpan di perangkat itu dan URL-nya otomatis dibersihkan
+(tidak tersisa di address bar / riwayat). Cek dengan **🔌 Tes Koneksi** — harus hijau.
+
+Catatan: buka lewat **Chrome**, bukan browser dalam aplikasi WhatsApp. WebView WhatsApp
+menyimpan localStorage terpisah, jadi tokennya tidak akan terbaca oleh aplikasi.
+Kalau setelah buka link masih diminta token, itu penyebabnya.
+
+Verifikasi manual kalau perlu: **Pengaturan → Token Sinkronisasi** (kolomnya sudah
+terisi sendiri, ditampilkan sebagai ••••).
 
 ### 3. Pasang gate di Apps Script
 
