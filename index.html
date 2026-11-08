@@ -9137,7 +9137,6 @@ const DataService = (() => {
   const ITEMS_STORAGE_KEY = "rimba_alam_items_v8";
   const TXNS_STORAGE_KEY = "rimba_alam_transactions_v8";
   const GAS_URL_STORAGE_KEY = "rimba_alam_gas_url_v4";
-  const SYNC_TOKEN_STORAGE_KEY = "rimba_alam_sync_token_v1";
   const PENDING_SYNC_STORAGE_KEY = "rimba_alam_pending_sync_v4";
 
   // Data default dari catalog-data.js (fallback jika belum dimuat)
@@ -10911,59 +10910,18 @@ const DataService = (() => {
     return DEFAULT_GAS_URL;
   }
 
-  /** Token rahasia per-perangkat. TIDAK disimpan di repo, diisi sekali oleh Super Admin. */
-  function getSyncToken() {
+  function readDeviceCred() {
     try {
-      if (typeof window !== "undefined" && window.localStorage) {
-        return (window.localStorage.getItem(SYNC_TOKEN_STORAGE_KEY) || "").trim();
-      }
-    } catch (e) {}
-    return "";
-  }
-
-  function setSyncToken(token) {
-    try {
-      if (typeof window !== "undefined" && window.localStorage) {
-        window.localStorage.setItem(SYNC_TOKEN_STORAGE_KEY, (token || "").trim());
-        return { success: true, message: "Token sinkronisasi disimpan di perangkat ini." };
-      }
-      return { success: false, message: "Penyimpanan browser tidak tersedia." };
+      if (typeof window === "undefined" || !window.sessionStorage) return null;
+      const raw = window.sessionStorage.getItem("rimba_alam_device_cred_v1");
+      if (!raw) return null;
+      const c = JSON.parse(raw);
+      if (!c || !c.u || !c.p) return null;
+      return { u: String(c.u), p: String(c.p) };
     } catch (e) {
-      return { success: false, message: "Gagal menyimpan token: " + e.message };
+      return null;
     }
   }
-
-  /**
-   * Shim fetch: setiap request ke script.google.com otomatis diberi token.
-   * GET  -> tambah ?token=... di query
-   * POST -> sisipkan field "token" ke body JSON
-   * Tujuannya supaya semua jalur (baca sheet, tulis mutasi, baca pengguna, ping)
-   * ikut terlindungi tanpa mengubah satu per satu pemanggilnya.
-   */
-  /**
-   * Bootstrap token dari URL: https://rimbastock.my.id/#token=XXXX
-   * Super Admin cukup kirim link sekali; staf tinggal buka, token tersimpan
-   * otomatis dan URL-nya dibersihkan supaya tidak ikut ter-share.
-   */
-  (function bootstrapTokenFromUrl() {
-    try {
-      if (typeof window === "undefined" || !window.location) return;
-      const raw = String(window.location.hash || "") + "&" + String(window.location.search || "");
-      const m = raw.match(/[?#&]token=([^&\s]+)/);
-      if (!m) return;
-      const tok = decodeURIComponent(m[1]).trim();
-      if (!tok) return;
-      if (typeof window.localStorage !== "undefined") {
-        window.localStorage.setItem(SYNC_TOKEN_STORAGE_KEY, tok);
-      }
-      if (window.history && window.history.replaceState) {
-        window.history.replaceState(null, "", window.location.pathname);
-      }
-      console.log("[DataService] Token sinkronisasi terpasang dari link.");
-    } catch (e) {
-      /* jangan pernah menggagalkan load aplikasi */
-    }
-  })();
 
   (function installGasFetchShim() {
     if (typeof window === "undefined" || !window.fetch || window.__gasFetchShim) return;
@@ -10974,7 +10932,7 @@ const DataService = (() => {
       try {
         const url = typeof input === "string" ? input : (input && input.url) || "";
         if (url.indexOf("script.google.com") !== -1) {
-          const token = getSyncToken();
+          const cred = readDeviceCred();
           const method = ((init && init.method) || (input && input.method) || "GET").toUpperCase();
 
           if (method === "POST") {
@@ -10982,15 +10940,25 @@ const DataService = (() => {
             if (typeof init.body === "string") {
               try {
                 const obj = JSON.parse(init.body);
-                obj.token = token;
+                // authUser/authPin TIDAK menimpa username/pin milik payload
+                // (payload "updateUserPin" memakai dua field itu untuk target lain).
+                if (cred) {
+                  obj.authUser = cred.u;
+                  obj.authPin = cred.p;
+                }
                 init = Object.assign({}, init, { body: JSON.stringify(obj) });
               } catch (e) {
                 /* body bukan JSON, biarkan apa adanya */
               }
             }
-          } else if (token && url.indexOf("token=") === -1) {
+          } else if (cred) {
             const sep = url.indexOf("?") === -1 ? "?" : "&";
-            input = url + sep + "token=" + encodeURIComponent(token);
+            const extra = [];
+            if (cred && url.indexOf("authUser=") === -1) {
+              extra.push("authUser=" + encodeURIComponent(cred.u));
+              extra.push("authPin=" + encodeURIComponent(cred.p));
+            }
+            if (extra.length) input = url + sep + extra.join("&");
           }
         }
       } catch (e) {
@@ -11456,8 +11424,6 @@ const DataService = (() => {
     restoreFullBackup,
     getGasUrl,
     setGasUrl,
-    getSyncToken,
-    setSyncToken,
     testGasConnection,
     syncFromSpreadsheet,
     flushPendingSync,
@@ -11493,6 +11459,9 @@ if (typeof window !== "undefined") {
 
 const AuthService = (() => {
   const SESSION_KEY = "rimba_alam_session";
+  // Kredensial perangkat (nama + PIN) untuk autentikasi ke Apps Script.
+  // Disimpan di sessionStorage: hilang saat logout / browser ditutup.
+  const DEVICE_CRED_KEY = "rimba_alam_device_cred_v1";
   const USERS_STORAGE_KEY = "rimba_alam_users_db_v3";
   let _inMemorySession = null;
   const _failedAttempts = {};
@@ -11673,6 +11642,29 @@ const AuthService = (() => {
   }
 
   /** Simpan sesi aktif */
+  /** Simpan kredensial perangkat (dipakai shim fetch untuk autentikasi ke GAS). */
+  function _saveDeviceCred(username, pin) {
+    try {
+      if (typeof window !== "undefined" && window.sessionStorage) {
+        const u = String(username || "").trim();
+        const p = String(pin || "").trim();
+        if (!u || !p) return;
+        window.sessionStorage.setItem(DEVICE_CRED_KEY, JSON.stringify({ u: u, p: p }));
+      }
+    } catch (e) {
+      console.warn("[AuthService] Gagal menyimpan kredensial perangkat:", e);
+    }
+  }
+
+  /** Hapus kredensial perangkat (dipanggil saat logout). */
+  function _clearDeviceCred() {
+    try {
+      if (typeof window !== "undefined" && window.sessionStorage) {
+        window.sessionStorage.removeItem(DEVICE_CRED_KEY);
+      }
+    } catch (e) {}
+  }
+
   function _saveSession(session) {
     _inMemorySession = session;
     try {
@@ -11752,6 +11744,7 @@ const AuthService = (() => {
           loginAt: new Date().toISOString()
         };
         _saveSession(session);
+        _saveDeviceCred("satian", cleanPin);
         return {
           success: true,
           message: "Selamat datang, Satian (Super Admin)!",
@@ -11831,6 +11824,7 @@ const AuthService = (() => {
     };
 
     _saveSession(session);
+    _saveDeviceCred(session.username, cleanPin);
 
     return {
       success: true,
@@ -11842,6 +11836,7 @@ const AuthService = (() => {
   /** Logout */
   function logout() {
     _clearSession();
+    _clearDeviceCred();
   }
 
   /** Cek status login */
@@ -12011,6 +12006,7 @@ const AuthService = (() => {
 
     user.pin = newPin.trim();
     _saveUsers(users);
+    _saveDeviceCred(session.username, newPin.trim());
 
     _syncUserToSheet({
       action: "updateUserPin",
@@ -12048,6 +12044,10 @@ const AuthService = (() => {
 
     user.pin = newPin.trim();
     _saveUsers(users);
+    const _sess = _getSession();
+    if (_sess && _sess.username === targetUsername) {
+      _saveDeviceCred(targetUsername, newPin.trim());
+    }
 
     _syncUserToSheet({
       action: "updateUserPin",
@@ -14316,13 +14316,6 @@ const App = (() => {
               <input type="url" id="inputGasUrl" class="form-input" style="font-size:.78rem;" placeholder="https://script.google.com/macros/s/.../exec" value="${DataService.getGasUrl()}">
             </div>
 
-            <div class="form-group mb-8">
-              <label class="form-label" style="font-size:.78rem; font-weight:600;">Token Sinkronisasi ${DataService.getSyncToken() ? '🟢 terpasang' : '🔴 belum diisi'}</label>
-              <input type="password" id="inputSyncToken" class="form-input" style="font-size:.78rem;" placeholder="tempel token dari Super Admin" value="${DataService.getSyncToken()}" autocomplete="off">
-              <p style="font-size:.7rem; color:var(--on-surface-variant); margin-top:4px;">
-                Wajib sama dengan Script Property <b>SYNC_TOKEN</b> di Apps Script. Tanpa token, perangkat ini tidak bisa membaca/menulis sheet.
-              </p>
-            </div>
 
             <div style="display:flex; gap:8px; margin-bottom: 12px;">
               <button type="button" class="btn btn-outline" style="flex:1; padding:10px; font-size:.82rem; font-weight:600;" onclick="App.testGasConnectionUI()">
@@ -15603,8 +15596,6 @@ const App = (() => {
   function saveGasUrlUI() {
     const input = document.getElementById("inputGasUrl");
     if (!input) return;
-    const tokenEl = document.getElementById("inputSyncToken");
-    if (tokenEl) DataService.setSyncToken(tokenEl.value);
     const res = DataService.setGasUrl(input.value);
     if (res.success) {
       showToast(res.message || "URL Google Sheets berhasil disimpan!", "success");
