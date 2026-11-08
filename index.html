@@ -9634,8 +9634,25 @@ const DataService = (() => {
     }
 
     if (staff && staff !== "ALL") {
-      const sLower = staff.toLowerCase();
-      list = list.filter(t => t.staff && t.staff.toLowerCase().includes(sLower));
+      const sLower = staff.toLowerCase().trim();
+      const matchTerms = [sLower];
+      if (typeof AuthService !== "undefined" && typeof AuthService.getAllUsers === "function") {
+        try {
+          const u = AuthService.getAllUsers().find(x => 
+            (x.name && x.name.toLowerCase() === sLower) || 
+            (x.username && x.username.toLowerCase() === sLower)
+          );
+          if (u) {
+            if (u.name) matchTerms.push(u.name.toLowerCase().trim());
+            if (u.username) matchTerms.push(u.username.toLowerCase().trim());
+          }
+        } catch (e) {}
+      }
+      list = list.filter(t => {
+        if (!t.staff) return false;
+        const tsLower = t.staff.toLowerCase().trim();
+        return matchTerms.some(m => tsLower === m || tsLower.includes(m) || m.includes(tsLower));
+      });
     }
 
     return _deepClone(list.slice(0, limit));
@@ -9647,15 +9664,28 @@ const DataService = (() => {
    */
   function getStaffList() {
     const staffSet = new Set();
+
+    // 1. Baca seluruh data user terdaftar dan aktif dari AuthService
+    if (typeof AuthService !== "undefined" && typeof AuthService.getAllUsers === "function") {
+      try {
+        const users = AuthService.getAllUsers();
+        users.forEach(u => {
+          if (u && u.name) staffSet.add(u.name.trim());
+        });
+      } catch (e) {
+        console.warn("[DataService] Gagal membaca user untuk getStaffList:", e);
+      }
+    }
+
+    // 2. Gabungkan nama-nama PIC yang tercatat di riwayat transaksi mutasi
     _transactions.forEach(t => {
       const s = (t.staff || "").trim();
-      if (s && s.toLowerCase() !== "satian" && s.toLowerCase() !== "super admin") {
+      if (s && s.toLowerCase() !== "super admin") {
         staffSet.add(s);
       }
     });
-    // Hanya tambahkan staf dan admin operasional
-    ["ragil", "angel", "chef", "barista", "gudang", "rey"].forEach(u => staffSet.add(u));
-    return Array.from(staffSet).sort();
+
+    return Array.from(staffSet).filter(Boolean).sort((a, b) => a.localeCompare("id", { sensitivity: "base" }));
   }
 
   /**
@@ -11873,8 +11903,8 @@ const AuthService = (() => {
     const u = _getSession();
     if (!u) return false;
     const un = (u.username || "").toLowerCase();
-    if (un === "satian") return false;
-    return u.role === "admin" || u.role === "superadmin";
+    // Owner (satian) & Admin memiliki akses penuh melihat nominal uang & laporan
+    return u.role === "admin" || u.role === "superadmin" || un === "satian";
   }
 
   function getUserDivision() {
@@ -11889,10 +11919,8 @@ const AuthService = (() => {
     const u = _getSession();
     if (!u) return false;
     const un = (u.username || "").toLowerCase();
-    if (un === "satian") {
-      return false; // Satian (Owner) fokus kelola sistem & web
-    }
-    if (u.role === "admin" || u.role === "superadmin" || un === "admin" || u.division === "ADMIN" || u.division === "ALL") {
+    // Superadmin / Owner / Admin memiliki akses penuh ke seluruh divisi
+    if (u.role === "admin" || u.role === "superadmin" || un === "satian" || u.division === "ADMIN" || u.division === "ALL") {
       return true;
     }
     const cleanItemDiv = (itemDiv || "").toUpperCase();
@@ -11916,8 +11944,10 @@ const AuthService = (() => {
 
   function getAllowedDivisions() {
     const u = _getSession();
-    if (!u || u.username === "satian") return [];
-    if (u.role === "admin" || u.role === "superadmin" || u.division === "ADMIN" || u.division === "ALL") {
+    if (!u) return [];
+    const un = (u.username || "").toLowerCase();
+    // Owner & Admin mendapatkan seluruh divisi
+    if (u.role === "admin" || u.role === "superadmin" || un === "satian" || u.division === "ADMIN" || u.division === "ALL") {
       return ["KITCHEN", "BAR", "PASTRY", "LAINNYA"];
     }
     if (Array.isArray(u.divisions) && u.divisions.length > 0) {
@@ -11939,10 +11969,6 @@ const AuthService = (() => {
   function canInputStock() {
     const u = _getSession();
     if (!u) return false;
-    const un = (u.username || "").toLowerCase();
-    if (un === "satian") {
-      return false;
-    }
     return true;
   }
 
@@ -12573,11 +12599,10 @@ const App = (() => {
       if (loginEl) loginEl.style.display = "none";
       if (mainEl) mainEl.style.display = "flex";
 
-      // Navigasi Input: Akun Super Admin Satian TIDAK memiliki tombol input sama sekali
-      const isSuper = AuthService.isSuperAdmin();
+      // Navigasi Input: Tombol input aktif untuk semua pengguna yang berhak
       const navInput = document.getElementById("navItemInput");
       if (navInput) {
-        navInput.style.display = isSuper ? "none" : "";
+        navInput.style.display = "";
       }
 
       renderProfileBar();
