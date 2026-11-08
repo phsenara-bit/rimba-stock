@@ -10910,6 +10910,64 @@ const DataService = (() => {
     return DEFAULT_GAS_URL;
   }
 
+  function readDeviceCred() {
+    try {
+      if (typeof window === "undefined" || !window.sessionStorage) return null;
+      const raw = window.sessionStorage.getItem("rimba_alam_device_cred_v1");
+      if (!raw) return null;
+      const c = JSON.parse(raw);
+      if (!c || !c.u || !c.p) return null;
+      return { u: String(c.u), p: String(c.p) };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  (function installGasFetchShim() {
+    if (typeof window === "undefined" || !window.fetch || window.__gasFetchShim) return;
+    window.__gasFetchShim = true;
+    const _origFetch = window.fetch.bind(window);
+
+    window.fetch = function (input, init) {
+      try {
+        const url = typeof input === "string" ? input : (input && input.url) || "";
+        if (url.indexOf("script.google.com") !== -1) {
+          const cred = readDeviceCred();
+          const method = ((init && init.method) || (input && input.method) || "GET").toUpperCase();
+
+          if (method === "POST") {
+            init = init || {};
+            if (typeof init.body === "string") {
+              try {
+                const obj = JSON.parse(init.body);
+                // authUser/authPin TIDAK menimpa username/pin milik payload
+                // (payload "updateUserPin" memakai dua field itu untuk target lain).
+                if (cred) {
+                  obj.authUser = cred.u;
+                  obj.authPin = cred.p;
+                }
+                init = Object.assign({}, init, { body: JSON.stringify(obj) });
+              } catch (e) {
+                /* body bukan JSON, biarkan apa adanya */
+              }
+            }
+          } else if (cred) {
+            const sep = url.indexOf("?") === -1 ? "?" : "&";
+            const extra = [];
+            if (cred && url.indexOf("authUser=") === -1) {
+              extra.push("authUser=" + encodeURIComponent(cred.u));
+              extra.push("authPin=" + encodeURIComponent(cred.p));
+            }
+            if (extra.length) input = url + sep + extra.join("&");
+          }
+        }
+      } catch (e) {
+        /* jangan pernah menggagalkan request hanya karena shim */
+      }
+      return _origFetch(input, init);
+    };
+  })();
+
   function setGasUrl(url) {
     try {
       if (typeof window !== "undefined" && window.localStorage) {
@@ -11401,6 +11459,9 @@ if (typeof window !== "undefined") {
 
 const AuthService = (() => {
   const SESSION_KEY = "rimba_alam_session";
+  // Kredensial perangkat (nama + PIN) untuk autentikasi ke Apps Script.
+  // Disimpan di sessionStorage: hilang saat logout / browser ditutup.
+  const DEVICE_CRED_KEY = "rimba_alam_device_cred_v1";
   const USERS_STORAGE_KEY = "rimba_alam_users_db_v3";
   let _inMemorySession = null;
   const _failedAttempts = {};
@@ -11581,6 +11642,29 @@ const AuthService = (() => {
   }
 
   /** Simpan sesi aktif */
+  /** Simpan kredensial perangkat (dipakai shim fetch untuk autentikasi ke GAS). */
+  function _saveDeviceCred(username, pin) {
+    try {
+      if (typeof window !== "undefined" && window.sessionStorage) {
+        const u = String(username || "").trim();
+        const p = String(pin || "").trim();
+        if (!u || !p) return;
+        window.sessionStorage.setItem(DEVICE_CRED_KEY, JSON.stringify({ u: u, p: p }));
+      }
+    } catch (e) {
+      console.warn("[AuthService] Gagal menyimpan kredensial perangkat:", e);
+    }
+  }
+
+  /** Hapus kredensial perangkat (dipanggil saat logout). */
+  function _clearDeviceCred() {
+    try {
+      if (typeof window !== "undefined" && window.sessionStorage) {
+        window.sessionStorage.removeItem(DEVICE_CRED_KEY);
+      }
+    } catch (e) {}
+  }
+
   function _saveSession(session) {
     _inMemorySession = session;
     try {
@@ -11660,6 +11744,7 @@ const AuthService = (() => {
           loginAt: new Date().toISOString()
         };
         _saveSession(session);
+        _saveDeviceCred("satian", cleanPin);
         return {
           success: true,
           message: "Selamat datang, Satian (Super Admin)!",
@@ -11739,6 +11824,7 @@ const AuthService = (() => {
     };
 
     _saveSession(session);
+    _saveDeviceCred(session.username, cleanPin);
 
     return {
       success: true,
@@ -11750,6 +11836,7 @@ const AuthService = (() => {
   /** Logout */
   function logout() {
     _clearSession();
+    _clearDeviceCred();
   }
 
   /** Cek status login */
@@ -11919,6 +12006,7 @@ const AuthService = (() => {
 
     user.pin = newPin.trim();
     _saveUsers(users);
+    _saveDeviceCred(session.username, newPin.trim());
 
     _syncUserToSheet({
       action: "updateUserPin",
@@ -11956,6 +12044,10 @@ const AuthService = (() => {
 
     user.pin = newPin.trim();
     _saveUsers(users);
+    const _sess = _getSession();
+    if (_sess && _sess.username === targetUsername) {
+      _saveDeviceCred(targetUsername, newPin.trim());
+    }
 
     _syncUserToSheet({
       action: "updateUserPin",
@@ -14223,6 +14315,7 @@ const App = (() => {
               <label class="form-label" style="font-size:.78rem; font-weight:600;">URL Web App Google Apps Script Aktif</label>
               <input type="url" id="inputGasUrl" class="form-input" style="font-size:.78rem;" placeholder="https://script.google.com/macros/s/.../exec" value="${DataService.getGasUrl()}">
             </div>
+
 
             <div style="display:flex; gap:8px; margin-bottom: 12px;">
               <button type="button" class="btn btn-outline" style="flex:1; padding:10px; font-size:.82rem; font-weight:600;" onclick="App.testGasConnectionUI()">
