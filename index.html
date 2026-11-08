@@ -11471,16 +11471,6 @@ const AuthService = (() => {
   // Profil awal karyawan resmi Rimba Alam (Default PIN: 1234)
   // CATATAN PENTING: Akun Satian TIDAK ADA di sini dan TIDAK ADA di sheet!
   const DEFAULT_USERS = {
-    admin: {
-      username: "admin",
-      name: "Admin Rimba Alam",
-      role: "superadmin",
-      division: "ADMIN",
-      divisions: ["KITCHEN", "BAR", "PASTRY", "LAINNYA"],
-      pin: "1234",
-      avatar: "👔",
-      createdAt: "2026-01-01"
-    },
     ragil: {
       username: "ragil",
       name: "Ragil",
@@ -11596,21 +11586,16 @@ const AuthService = (() => {
           if (parsed.satian) {
             delete parsed.satian;
           }
-          // Pastikan admin Rimba Alam selalu ada dan berstatus superadmin
-          if (!parsed.admin) {
-            parsed.admin = { ...DEFAULT_USERS.admin };
-          } else {
-            parsed.admin.role = "superadmin";
-            parsed.admin.name = "Admin Rimba Alam";
-            if (!parsed.admin.divisions) {
-              parsed.admin.divisions = ["KITCHEN", "BAR", "PASTRY", "LAINNYA"];
-            }
+          // Pastikan akun lama admin dan satian tidak tersimpan di memori lokal
+          if (parsed.admin) {
+            delete parsed.admin;
           }
           _inMemoryUsers = parsed;
           return _inMemoryUsers;
         } else {
           _inMemoryUsers = JSON.parse(JSON.stringify(DEFAULT_USERS));
           delete _inMemoryUsers.satian;
+          delete _inMemoryUsers.admin;
           _saveUsers(_inMemoryUsers);
           return _inMemoryUsers;
         }
@@ -11625,6 +11610,7 @@ const AuthService = (() => {
   function _saveUsers(users) {
     const cleaned = { ...users };
     delete cleaned.satian;
+    delete cleaned.admin;
     _inMemoryUsers = cleaned;
     try {
       if (typeof window !== "undefined" && window.localStorage) {
@@ -11638,7 +11624,7 @@ const AuthService = (() => {
   /** Ambil semua daftar user (Tanpa Satian) */
   function getAllUsers() {
     const usersObj = _loadUsers();
-    return Object.values(usersObj).filter(u => u && u.username && u.username.toLowerCase() !== "satian");
+    return Object.values(usersObj).filter(u => u && u.username && u.username.toLowerCase() !== "satian" && u.username.toLowerCase() !== "admin");
   }
 
   /** Simpan sesi aktif */
@@ -11774,9 +11760,7 @@ const AuthService = (() => {
 
     // 3. Cek pencocokan alias resmi karyawan jika belum ketemu
     if (!userKey) {
-      if (cleanInput === "admin" && users["admin"]) {
-        userKey = "admin";
-      } else if (cleanInput.includes("ragil") && users["ragil"]) {
+      if (cleanInput.includes("ragil") && users["ragil"]) {
         userKey = "ragil";
       } else if (cleanInput.includes("angel") && users["angel"]) {
         userKey = "angel";
@@ -11854,21 +11838,21 @@ const AuthService = (() => {
     const u = _getSession();
     if (!u) return false;
     const un = (u.username || "").toLowerCase();
-    return u.role === "superadmin" || un === "satian" || un === "admin" || un === "rimba";
+    return u.role === "superadmin" || un === "satian";
   }
 
   function canManageUsers() {
     const u = _getSession();
     if (!u) return false;
     const un = (u.username || "").toLowerCase();
-    return u.role === "superadmin" || un === "satian" || un === "admin" || un === "rimba" || u.role === "admin";
+    return u.role === "superadmin" || un === "satian" || u.role === "admin";
   }
 
   function isAdmin() {
     const u = _getSession();
     if (!u) return false;
     const un = (u.username || "").toLowerCase();
-    return u.role === "admin" || u.role === "superadmin" || un === "satian" || un === "admin" || un === "rimba" || un === "ragil" || un === "angel";
+    return u.role === "admin" || u.role === "superadmin" || un === "satian";
   }
 
   function isAdminOnly() {
@@ -11890,7 +11874,7 @@ const AuthService = (() => {
     if (!u) return false;
     const un = (u.username || "").toLowerCase();
     if (un === "satian") return false;
-    return u.role === "admin" || u.role === "superadmin" || un === "admin" || un === "ragil" || un === "angel";
+    return u.role === "admin" || u.role === "superadmin";
   }
 
   function getUserDivision() {
@@ -12141,8 +12125,8 @@ const AuthService = (() => {
       return { success: false, message: "Akses ditolak: Hanya Admin / Super Admin yang dapat menghapus user." };
     }
 
-    if (username === "satian" || username === "admin") {
-      return { success: false, message: "Akun Super Admin utama tidak dapat dihapus." };
+    if (username === "satian") {
+      return { success: false, message: "Akun Owner utama tidak dapat dihapus." };
     }
 
     const users = _loadUsers();
@@ -12177,8 +12161,8 @@ const AuthService = (() => {
       return { success: false, message: "Akses ditolak: Hanya Admin / Super Admin yang dapat mengubah kategori user." };
     }
 
-    if (username === "satian" || username === "admin") {
-      return { success: false, message: "Kategori Super Admin utama tidak dapat diubah." };
+    if (username === "satian") {
+      return { success: false, message: "Kategori Owner utama tidak dapat diubah." };
     }
 
     const users = _loadUsers();
@@ -12327,7 +12311,7 @@ const AuthService = (() => {
       const currentUsers = _loadUsers();
       data.users.forEach(u => {
         const uName = String(u.username || "").toLowerCase().trim();
-        if (!uName || uName === "satian") return; // Satian tidak boleh masuk
+        if (!uName || uName === "satian" || uName === "admin") return; // Satian & Admin lama tidak boleh masuk
         currentUsers[uName] = {
           username: uName,
           name: u.name || uName,
