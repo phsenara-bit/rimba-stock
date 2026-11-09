@@ -1,0 +1,339 @@
+<script>
+/* ═══════════════════════════════════════════════════════════════════════
+   ASISTEN STOK — modul mandiri. Tidak mengubah fungsi lain di aplikasi.
+   Ikon bisa diganti: App.setAskAiIcon("✨") / URL gambar / data URI.
+   ═══════════════════════════════════════════════════════════════════════ */
+(function () {
+  "use strict";
+
+  var ICON_KEY = "rimba_ai_icon_v1";
+  var LOG_KEY = "rimba_ai_chatlog_v1";
+  var DEFAULT_ICON = "💬";
+  var MAX_TURNS_SENT = 2;
+
+  var state = { log: [], topic: "", busy: false };
+
+  /* ── Ikon kustom ─────────────────────────────────────────────── */
+  function getIcon() {
+    try { return (localStorage.getItem(ICON_KEY) || "").trim() || DEFAULT_ICON; }
+    catch (e) { return DEFAULT_ICON; }
+  }
+
+  function isImage(v) {
+    return /^(https?:\/\/|data:image\/|\.?\/)/i.test(v) && /\.(png|jpe?g|webp|svg|gif)(\?|$)/i.test(v)
+      || /^data:image\//i.test(v);
+  }
+
+  function renderIcon() {
+    var el = document.getElementById("askAiBtnIcon");
+    if (!el) return;
+    var v = getIcon();
+    el.textContent = "";
+    el.style.background = "";
+    el.style.color = "";
+    if (isImage(v)) {
+      el.style.width = "22px";
+      el.style.height = "22px";
+      el.style.borderRadius = "50%";
+      el.style.background = "url('" + v.replace(/'/g, "%27") + "') center/cover no-repeat";
+    } else {
+      el.style.width = "auto";
+      el.style.height = "auto";
+      el.style.fontSize = "18px";
+      el.textContent = Array.from(v).slice(0, 3).join("");
+    }
+    var hdr = document.getElementById("askAiHeadIcon");
+    if (hdr) {
+      hdr.textContent = isImage(v) ? "" : v;
+      hdr.style.background = isImage(v) ? "url('" + v.replace(/'/g, "%27") + "') center/cover no-repeat" : "";
+    }
+  }
+
+  function setIcon(v) {
+    try { localStorage.setItem(ICON_KEY, String(v || "").trim()); } catch (e) {}
+    renderIcon();
+  }
+
+  /* ── Simpan percakapan (hanya di HP karyawan) ─────────────────── */
+  function loadLog() {
+    try {
+      var raw = sessionStorage.getItem(LOG_KEY);
+      state.log = raw ? JSON.parse(raw) : [];
+      for (var i = state.log.length - 1; i >= 0; i--) {
+        if (state.log[i].topic) { state.topic = state.log[i].topic; break; }
+      }
+    } catch (e) { state.log = []; }
+  }
+
+  function saveLog() {
+    try {
+      sessionStorage.setItem(LOG_KEY, JSON.stringify(state.log.slice(-30)));
+    } catch (e) {}
+  }
+
+  function sentTurns() {
+    // Kirim maksimal 2 giliran terakhir saja (hemat token, konteks tetap nyambung)
+    var turns = [];
+    var msgs = state.log.filter(function (m) { return m.role === "user" || m.role === "model"; });
+    var recent = msgs.slice(-MAX_TURNS_SENT * 2);
+    recent.forEach(function (m) {
+      turns.push({ role: m.role, text: String(m.text || "").slice(0, 400) });
+    });
+    return turns;
+  }
+
+  /* ── UI ──────────────────────────────────────────────────────── */
+  var CSS = [
+    "#askAiDialog .dialog-sheet{max-height:86vh;display:flex;flex-direction:column;gap:10px;padding-bottom:18px;}",
+    "#askAiHead{display:flex;align-items:center;gap:10px;}",
+    "#askAiHeadIcon{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:20px;background:var(--surface-variant,#eef2f6);}",
+    "#askAiTitle{font-weight:800;font-size:1rem;}",
+    "#askAiSub{font-size:.7rem;color:var(--on-surface-variant,#64748b);}",
+    "#askAiClose{margin-left:auto;background:none;border:0;font-size:1.2rem;color:var(--on-surface-variant,#64748b);cursor:pointer;padding:4px 8px;}",
+    "#askAiThread{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;min-height:160px;max-height:52vh;padding:4px 2px;}",
+    ".askai-msg{max-width:86%;padding:9px 12px;border-radius:14px;font-size:.84rem;line-height:1.45;white-space:pre-wrap;word-wrap:break-word;}",
+    ".askai-msg.user{align-self:flex-end;background:var(--primary,#1e293b);color:#fff;border-bottom-right-radius:4px;}",
+    ".askai-msg.model{align-self:flex-start;background:var(--surface-variant,#eef2f6);color:var(--on-surface,#0f172a);border-bottom-left-radius:4px;}",
+    ".askai-msg.sys{align-self:center;background:#fef3c7;color:#92400e;font-size:.75rem;text-align:center;}",
+    "#askAiChips{display:flex;gap:6px;flex-wrap:wrap;}",
+    ".askai-chip{font-size:.72rem;padding:6px 10px;border-radius:999px;border:1px solid var(--outline-variant,#cbd5e1);background:transparent;color:var(--on-surface,#0f172a);cursor:pointer;}",
+    "#askAiInputRow{display:flex;gap:8px;align-items:flex-end;}",
+    "#askAiInput{flex:1;resize:none;max-height:90px;padding:10px 12px;border-radius:12px;border:1px solid var(--outline-variant,#cbd5e1);font-size:.85rem;font-family:inherit;background:var(--surface,#fff);color:inherit;}",
+    "#askAiSend{width:42px;height:42px;border-radius:50%;border:0;background:var(--primary,#1e293b);color:#fff;font-size:1rem;cursor:pointer;}",
+    "#askAiSend:disabled{opacity:.45;}",
+    ".askai-note{font-size:.66rem;color:var(--on-surface-variant,#94a3b8);text-align:center;}",
+    ".askai-dots span{display:inline-block;width:5px;height:5px;margin-right:3px;border-radius:50%;background:currentColor;opacity:.35;animation:askaiDot 1s infinite;}",
+    ".askai-dots span:nth-child(2){animation-delay:.15s;}",
+    ".askai-dots span:nth-child(3){animation-delay:.3s;}",
+    "@keyframes askaiDot{0%,100%{opacity:.25;transform:translateY(0);}50%{opacity:.9;transform:translateY(-2px);}}"
+  ].join("");
+
+  var SHEET_HTML = ''
+    + '<div class="dialog-overlay" id="askAiDialog" role="dialog" aria-modal="true">'
+    + '  <div class="dialog-sheet">'
+    + '    <div class="dialog-handle"></div>'
+    + '    <div id="askAiHead">'
+    + '      <div id="askAiHeadIcon">💬</div>'
+    + '      <div>'
+    + '        <div id="askAiTitle">Tanya Stok</div>'
+    + '        <div id="askAiSub">Jawaban dari data sheet bulan ini</div>'
+    + '      </div>'
+    + '      <button id="askAiClose" aria-label="Tutup">✕</button>'
+    + '    </div>'
+    + '    <div id="askAiThread"></div>'
+    + '    <div id="askAiChips">'
+    + '      <button class="askai-chip" data-q="Barang apa yang stoknya kritis?">Stok kritis</button>'
+    + '      <button class="askai-chip" data-q="Nilai stok bulan ini berapa?">Nilai aset</button>'
+    + '      <button class="askai-chip" data-q="Barang apa saja yang stoknya minus?">Yang minus</button>'
+    + '    </div>'
+    + '    <div id="askAiInputRow">'
+    + '      <textarea id="askAiInput" rows="1" placeholder="Tanya stok, misal: kenapa ayam minus?"></textarea>'
+    + '      <button id="askAiSend" aria-label="Kirim">➤</button>'
+    + '    </div>'
+    + '    <div class="askai-note">Angka diambil dari sheet. Kalau ada kejanggalan, cek manual.</div>'
+    + '  </div>'
+    + '</div>';
+
+  function ensureUI() {
+    if (document.getElementById("askAiDialog")) return;
+    var style = document.createElement("style");
+    style.textContent = CSS;
+    document.head.appendChild(style);
+
+    var holder = document.createElement("div");
+    holder.innerHTML = SHEET_HTML;
+    document.body.appendChild(holder.firstElementChild);
+
+    document.getElementById("askAiClose").addEventListener("click", close);
+    document.getElementById("askAiDialog").addEventListener("click", function (e) {
+      if (e.target && e.target.id === "askAiDialog") close();
+    });
+    document.getElementById("askAiSend").addEventListener("click", submit);
+    var ta = document.getElementById("askAiInput");
+    ta.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+    });
+    ta.addEventListener("input", function () {
+      ta.style.height = "auto";
+      ta.style.height = Math.min(ta.scrollHeight, 90) + "px";
+    });
+    Array.prototype.forEach.call(document.querySelectorAll(".askai-chip"), function (btn) {
+      btn.addEventListener("click", function () {
+        var q = btn.getAttribute("data-q");
+        ta.value = q;
+        submit();
+      });
+    });
+    renderIcon();
+  }
+
+  function bubble(role, text) {
+    ensureUI();
+    var thread = document.getElementById("askAiThread");
+    var d = document.createElement("div");
+    d.className = "askai-msg " + role;
+    if (role === "typing") {
+      d.className = "askai-msg model";
+      d.innerHTML = '<span class="askai-dots"><span></span><span></span><span></span></span>';
+      d.id = "askAiTyping";
+    } else {
+      d.textContent = text;
+    }
+    thread.appendChild(d);
+    thread.scrollTop = thread.scrollHeight;
+    return d;
+  }
+
+  function clearTyping() {
+    var t = document.getElementById("askAiTyping");
+    if (t && t.parentNode) t.parentNode.removeChild(t);
+  }
+
+  function renderThread() {
+    ensureUI();
+    var thread = document.getElementById("askAiThread");
+    thread.innerHTML = "";
+    if (!state.log.length) {
+      var t = document.createElement("div");
+      t.className = "askai-msg model";
+      t.textContent = "Halo! Tanya apa saja soal stok bulan ini — kenapa minus, kapan mulai minus, nilai aset, atau barang yang perlu dibeli.";
+      thread.appendChild(t);
+      return;
+    }
+    state.log.forEach(function (m) {
+      var d = document.createElement("div");
+      d.className = "askai-msg " + (m.role === "user" ? "user" : m.role === "sys" ? "sys" : "model");
+      d.textContent = m.text;
+      thread.appendChild(d);
+    });
+    thread.scrollTop = thread.scrollHeight;
+  }
+
+  /* ── Kirim pertanyaan ────────────────────────────────────────── */
+  function friendlyError(data) {
+    var code = (data && data.code) || "";
+    if (code === "QUOTA") return data.message || "Batas pertanyaan harian sudah tercapai.";
+    if (code === "UNAUTHORIZED") return "Sesi kamu tidak valid. Logout lalu login lagi (nama + PIN).";
+    if (code === "EMPTY") return "Pertanyaannya kosong.";
+    return "Asisten belum aktif di server. Pastikan Code.gs versi baru sudah di-deploy.";
+  }
+
+  function submit() {
+    var ta = document.getElementById("askAiInput");
+    if (!ta) return;
+    var q = (ta.value || "").trim();
+    if (!q || state.busy) return;
+    ta.value = "";
+    ta.style.height = "auto";
+    ask(q);
+  }
+
+  function ask(q) {
+    ensureUI();
+    state.busy = true;
+    // Riwayat dihitung SEBELUM pertanyaan baru masuk, supaya pertanyaan ini tidak terkirim dua kali
+    var hist = sentTurns();
+    var sendBtn = document.getElementById("askAiSend");
+    if (sendBtn) sendBtn.disabled = true;
+
+    state.log.push({ role: "user", text: q });
+    saveLog();
+    renderThread();
+    bubble("typing");
+
+    var url = (window.DataService && typeof window.DataService.getGasUrl === "function")
+      ? window.DataService.getGasUrl() : "";
+    if (!url) {
+      clearTyping();
+      state.busy = false;
+      if (sendBtn) sendBtn.disabled = false;
+      bubble("sys", "URL Google Sheets belum diatur.");
+      return;
+    }
+
+    var params = new URLSearchParams();
+    params.set("action", "askAI");
+    params.set("q", q);
+    params.set("topic", state.topic || "");
+    params.set("history", JSON.stringify(hist));
+    params.set("t", String(Date.now()));
+
+    fetch(url + (url.indexOf("?") === -1 ? "?" : "&") + params.toString(), { method: "GET" })
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        clearTyping();
+        if (data && data.success && data.answer) {
+          if (data.topic) state.topic = data.topic;
+          state.log.push({ role: "model", text: data.answer, topic: data.topic || "" });
+        } else {
+          state.log.push({ role: "sys", text: friendlyError(data) });
+        }
+        saveLog();
+        renderThread();
+      })
+      .catch(function (err) {
+        clearTyping();
+        state.log.push({ role: "sys", text: "Gagal menghubungi server (" + err.message + ")." });
+        saveLog();
+        renderThread();
+      })
+      .then(function () {
+        state.busy = false;
+        var b = document.getElementById("askAiSend");
+        if (b) b.disabled = false;
+      });
+  }
+
+  /* ── Buka / tutup ────────────────────────────────────────────── */
+  function open() {
+    if (!(window.AuthService && window.AuthService.getCurrentUser && window.AuthService.getCurrentUser())) {
+      if (window.App && window.App.showToast) window.App.showToast("Login dulu untuk memakai asisten.", "error");
+      return;
+    }
+    ensureUI();
+    renderIcon();
+    renderThread();
+    var dlg = document.getElementById("askAiDialog");
+    if (dlg) dlg.classList.add("show");
+    setTimeout(function () {
+      var ta = document.getElementById("askAiInput");
+      if (ta && !("ontouchstart" in window)) ta.focus();
+    }, 250);
+  }
+
+  function close() {
+    var dlg = document.getElementById("askAiDialog");
+    if (dlg) dlg.classList.remove("show");
+  }
+
+  function reset() {
+    state.log = [];
+    state.topic = "";
+    try { sessionStorage.removeItem(LOG_KEY); } catch (e) {}
+    renderThread();
+  }
+
+  /* ── Pasang ke App + saat halaman siap ───────────────────────── */
+  function boot() {
+    ensureUI();
+    renderIcon();
+    loadLog();
+    if (window.App) {
+      window.App.openAskAi = open;
+      window.App.closeAskAi = close;
+      window.App.setAskAiIcon = setIcon;
+      window.App.getAskAiIcon = getIcon;
+      window.App.resetAskAi = reset;
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
+})();
+</script>
