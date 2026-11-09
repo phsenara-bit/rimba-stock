@@ -1,17 +1,20 @@
 <script>
 /* ═══════════════════════════════════════════════════════════════════════
    ASISTEN STOK — modul mandiri. Tidak mengubah fungsi lain di aplikasi.
+   Sesi chat: SELALU BARU tiap dibuka. Tutup chat = percakapan dihapus,
+   tidak disimpan ke mana pun (tidak ada sessionStorage/localStorage).
    Ikon bisa diganti: App.setAskAiIcon("✨") / URL gambar / data URI.
    ═══════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
 
   var ICON_KEY = "rimba_ai_icon_v1";
-  var LOG_KEY = "rimba_ai_chatlog_v1";
   var DEFAULT_ICON = "💬";
   var MAX_TURNS_SENT = 2;
 
-  var state = { log: [], topic: "", busy: false };
+  // log hanya hidup di memori. gen dinaikkan tiap sesi ditutup, supaya
+  // jawaban yang telat datang tidak "menghidupkan" chat yang sudah ditutup.
+  var state = { log: [], topic: "", busy: false, gen: 0 };
 
   /* ── Ikon kustom ─────────────────────────────────────────────── */
   function getIcon() {
@@ -52,23 +55,6 @@
   function setIcon(v) {
     try { localStorage.setItem(ICON_KEY, String(v || "").trim()); } catch (e) {}
     renderIcon();
-  }
-
-  /* ── Simpan percakapan (hanya di HP karyawan) ─────────────────── */
-  function loadLog() {
-    try {
-      var raw = sessionStorage.getItem(LOG_KEY);
-      state.log = raw ? JSON.parse(raw) : [];
-      for (var i = state.log.length - 1; i >= 0; i--) {
-        if (state.log[i].topic) { state.topic = state.log[i].topic; break; }
-      }
-    } catch (e) { state.log = []; }
-  }
-
-  function saveLog() {
-    try {
-      sessionStorage.setItem(LOG_KEY, JSON.stringify(state.log.slice(-30)));
-    } catch (e) {}
   }
 
   function sentTurns() {
@@ -167,6 +153,29 @@
     renderIcon();
   }
 
+  /* Tombol 💬 dipasang sendiri oleh modul ini, jadi index.html tidak perlu
+     diubah lagi tiap kali aplikasi kamu update. */
+  function injectButton() {
+    if (document.getElementById("btnAskAi")) return true;
+    var anchor = document.querySelector('.top-bar [title="Pengaturan PIN Karyawan"]');
+    var host = anchor ? anchor.parentNode : document.querySelector(".top-bar");
+    if (!host) return false;
+
+    var btn = document.createElement("button");
+    btn.className = "top-bar-action";
+    btn.id = "btnAskAi";
+    btn.title = "Tanya Stok";
+    btn.innerHTML = '<span id="askAiBtnIcon" style="display:inline-flex;align-items:center;justify-content:center;font-size:18px;line-height:1;">' + DEFAULT_ICON + '</span>';
+    btn.addEventListener("click", function (e) {
+      e.preventDefault();
+      open();
+    });
+
+    if (anchor && anchor.parentNode === host) host.insertBefore(btn, anchor);
+    else host.appendChild(btn);
+    return true;
+  }
+
   function bubble(role, text) {
     ensureUI();
     var thread = document.getElementById("askAiThread");
@@ -230,6 +239,7 @@
 
   function ask(q) {
     ensureUI();
+    var gen = state.gen;              // sesi saat pertanyaan dikirim
     state.busy = true;
     // Riwayat dihitung SEBELUM pertanyaan baru masuk, supaya pertanyaan ini tidak terkirim dua kali
     var hist = sentTurns();
@@ -237,7 +247,6 @@
     if (sendBtn) sendBtn.disabled = true;
 
     state.log.push({ role: "user", text: q });
-    saveLog();
     renderThread();
     bubble("typing");
 
@@ -264,6 +273,7 @@
         return res.json();
       })
       .then(function (data) {
+        if (gen !== state.gen) return;   // chat sudah ditutup → buang jawabannya
         clearTyping();
         if (data && data.success && data.answer) {
           if (data.topic) state.topic = data.topic;
@@ -271,16 +281,16 @@
         } else {
           state.log.push({ role: "sys", text: friendlyError(data) });
         }
-        saveLog();
         renderThread();
       })
       .catch(function (err) {
+        if (gen !== state.gen) return;
         clearTyping();
         state.log.push({ role: "sys", text: "Gagal menghubungi server (" + err.message + ")." });
-        saveLog();
         renderThread();
       })
       .then(function () {
+        if (gen !== state.gen) return;
         state.busy = false;
         var b = document.getElementById("askAiSend");
         if (b) b.disabled = false;
@@ -293,9 +303,10 @@
       if (window.App && window.App.showToast) window.App.showToast("Login dulu untuk memakai asisten.", "error");
       return;
     }
+    injectButton();
     ensureUI();
+    reset();                      // tiap buka = percakapan baru
     renderIcon();
-    renderThread();
     var dlg = document.getElementById("askAiDialog");
     if (dlg) dlg.classList.add("show");
     setTimeout(function () {
@@ -304,23 +315,28 @@
     }, 250);
   }
 
+  function reset() {
+    state.gen++;                 // jawaban lama yang masih di jalan jadi tidak dipakai
+    state.log = [];
+    state.topic = "";
+    state.busy = false;
+    var b = document.getElementById("askAiSend");
+    if (b) b.disabled = false;
+    clearTyping();
+    renderThread();
+  }
+
   function close() {
     var dlg = document.getElementById("askAiDialog");
     if (dlg) dlg.classList.remove("show");
-  }
-
-  function reset() {
-    state.log = [];
-    state.topic = "";
-    try { sessionStorage.removeItem(LOG_KEY); } catch (e) {}
-    renderThread();
+    reset();                      // tutup = percakapan dihapus
   }
 
   /* ── Pasang ke App + saat halaman siap ───────────────────────── */
   function boot() {
+    injectButton();
     ensureUI();
     renderIcon();
-    loadLog();
     if (window.App) {
       window.App.openAskAi = open;
       window.App.closeAskAi = close;

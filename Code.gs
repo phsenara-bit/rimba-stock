@@ -567,14 +567,17 @@ function _realDoPost(e) {
           }
         }
         if (!exists) {
+          // Tab bulan LAIN dapat baris katalog baru dengan stok awal 0.
+          // Kalau stok awal ikut disalin, nilai aset bulan yang sudah lewat
+          // mendadak naik padahal barangnya baru didaftarkan bulan ini.
           insertItemAlphabetically(s, {
             name: itemName,
             division: division,
             unit: unit,
             price: price,
-            stock: stock
+            stock: 0
           });
-          console.log(`Menyinkronkan item baru "${itemName}" ke tab yang sudah ada: ${sName}`);
+          console.log(`Menyinkronkan item baru "${itemName}" ke tab yang sudah ada: ${sName} (stok awal 0)`);
         }
       }
 
@@ -1129,28 +1132,84 @@ function updateMonthlyMatrixCell(ss, data) {
 /**
  * Mencari tab bulanan. Menghubungkan langsung ke tab bulan ini atau tab aktif user.
  */
+/**
+ * Alias nama bulan (Indonesia + Inggris) supaya tab "Jun 2026", "June 2026",
+ * "Juni 2026" sama-sama dikenali. Sebelumnya Juni/Juli/Agustus gagal cocok
+ * karena sistem cuma mencari "june"/"july"/"august".
+ */
+const MONTH_ALIASES = [
+  ["jan", "january", "januari"],
+  ["feb", "february", "februari", "pebruari"],
+  ["mar", "march", "maret"],
+  ["apr", "april"],
+  ["mei", "may"],
+  ["jun", "june", "juni"],
+  ["jul", "july", "juli"],
+  ["aug", "agu", "ags", "agt", "agus", "august", "agustus"],
+  ["sep", "sept", "september"],
+  ["okt", "oct", "october", "oktober"],
+  ["nov", "november", "nopember"],
+  ["des", "dec", "december", "desember"]
+];
+
+/** Nama bulan untuk tab baru, gaya yang sama dengan tab yang sudah ada ("Nov 2026"). */
+const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
+                     "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
+
+function _sheetTokens_(name) {
+  return String(name || "").toLowerCase().split(/[^a-z0-9]+/).filter(function (t) { return !!t; });
+}
+
+/** 1-12 kalau nama tab memuat nama bulan, 0 kalau tidak. Dicocokkan per kata utuh. */
+function _sheetMonthNum_(name) {
+  const toks = _sheetTokens_(name);
+  for (let i = 0; i < toks.length; i++) {
+    for (let m = 0; m < 12; m++) {
+      if (MONTH_ALIASES[m].indexOf(toks[i]) !== -1) return m + 1;
+    }
+  }
+  return 0;
+}
+
+/** Tahun 4 digit di nama tab, 0 kalau tidak ada. */
+function _sheetYear_(name) {
+  const m = String(name || "").match(/(?:19|20)\d{2}/);
+  return m ? parseInt(m[0], 10) : 0;
+}
+
+/**
+ * Cari tab bulanan untuk (tahun, bulan) tertentu.
+ * - Harus cocok bulan DAN tahun. Tab "Nov 2027" tidak akan dipakai untuk Nov 2026.
+ * - Tab tanpa tahun (misal cuma "Nov") tetap diterima sebagai cadangan.
+ * - Tab log / spoil / data pengguna selalu dilewati.
+ */
+function _findMonthlySheet_(ss, year, monthNum) {
+  const sheets = ss.getSheets();
+  let tanpaTahun = null;
+  for (let i = 0; i < sheets.length; i++) {
+    const s = sheets[i];
+    const sName = s.getName();
+    if (sName === SHEET_LOG_NAME || sName === SHEET_SPOIL_NAME || sName === SHEET_USERS_NAME) continue;
+    if (_sheetMonthNum_(sName) !== monthNum) continue;
+    const y = _sheetYear_(sName);
+    if (y === year) return s;
+    if (y === 0 && !tanpaTahun) tanpaTahun = s;
+  }
+  return tanpaTahun;
+}
+
 function getOrCreateMonthlySheet(ss, year, monthNum) {
-  const monthNames = [
-    "Jan", "Feb", "Mar", "Apr", "Mei", "June",
-    "July", "August", "Sep", "Okt", "Nov", "Des"
-  ];
+  const monthNames = MONTH_SHORT;
   const fullMonthNames = [
     "januari", "februari", "maret", "april", "mei", "juni",
     "juli", "agustus", "september", "oktober", "november", "desember"
   ];
-  const targetPrefix = monthNames[monthNum - 1].toLowerCase();
-  const fullPrefix = fullMonthNames[monthNum - 1];
 
   const sheets = ss.getSheets();
-  
-  // 1. Cek tab yang namanya mengandung bulan ini (misal "Nov", "November", "Des 2026")
-  for (let s of sheets) {
-    const sName = s.getName().toLowerCase();
-    if (s.getName() === SHEET_LOG_NAME || s.getName() === SHEET_SPOIL_NAME) continue;
-    if (sName.includes(targetPrefix) || sName.includes(fullPrefix)) {
-      return s;
-    }
-  }
+
+  // 1. Cek tab bulan ini (misal "Nov", "November", "Nov 2026")
+  const existing = _findMonthlySheet_(ss, year, monthNum);
+  if (existing) return existing;
 
   // 2. AUTO-ROLLOVER BULAN BARU OTOMATIS:
   // Jika tab bulan baru belum ada, sistem mengkloning tab BULAN SEBELUMNYA yang kronologis!
@@ -1160,26 +1219,15 @@ function getOrCreateMonthlySheet(ss, year, monthNum) {
     prevMonthNum = 12;
     prevYear = year - 1;
   }
-  const prevPrefix = monthNames[prevMonthNum - 1].toLowerCase();
-  const prevFullPrefix = fullMonthNames[prevMonthNum - 1];
-
-  let prevSheet = null;
   // 2a. Cari tab bulan tepat sebelumnya (contoh: cari "Nov" / "November" jika sedang membuat "Des 2026")
-  for (let s of sheets) {
-    const sName = s.getName().toLowerCase();
-    if (s.getName() === SHEET_LOG_NAME || s.getName() === SHEET_SPOIL_NAME) continue;
-    if (sName.includes(prevPrefix) || sName.includes(prevFullPrefix)) {
-      prevSheet = s;
-      break;
-    }
-  }
+  let prevSheet = _findMonthlySheet_(ss, prevYear, prevMonthNum);
 
   // 2b. Jika tidak ditemukan, cari tab bulanan terakhir (scanning dari kanan ke kiri sheet terbaru, BUKAN May!)
   if (!prevSheet) {
     for (let i = sheets.length - 1; i >= 0; i--) {
       const s = sheets[i];
       const sName = s.getName();
-      if (sName !== SHEET_LOG_NAME && sName !== SHEET_SPOIL_NAME && s.getLastRow() >= 14) {
+      if (sName !== SHEET_LOG_NAME && sName !== SHEET_SPOIL_NAME && sName !== SHEET_USERS_NAME && s.getLastRow() >= 14) {
         prevSheet = s;
         break;
       }

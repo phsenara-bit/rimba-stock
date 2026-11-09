@@ -1602,9 +1602,6 @@ netlify-drawer {
       <div style="display:flex; align-items:center; gap:2px;">
         <button class="top-bar-action" id="btnReportTopBar" onclick="App.navigateTo('report')" title="Laporan Rekapitulasi Stok" style="display:none;">📊</button>
         <button class="top-bar-action" id="btnSettingsTopBar" onclick="App.navigateTo('settings')" title="Pengaturan & Kelola Barang" style="display:none;">⚙️</button>
-        <button class="top-bar-action" id="btnAskAi" onclick="App.openAskAi()" title="Tanya Stok" style="display:none;">
-          <span id="askAiBtnIcon" style="display:inline-flex;align-items:center;justify-content:center;font-size:18px;line-height:1;">💬</span>
-        </button>
         <button class="top-bar-action" onclick="App.openChangePinDialog()" title="Pengaturan PIN Karyawan">🔑</button>
         <button class="top-bar-action" onclick="App.confirmLogout()" title="Keluar">🚪</button>
       </div>
@@ -9637,8 +9634,25 @@ const DataService = (() => {
     }
 
     if (staff && staff !== "ALL") {
-      const sLower = staff.toLowerCase();
-      list = list.filter(t => t.staff && t.staff.toLowerCase().includes(sLower));
+      const sLower = staff.toLowerCase().trim();
+      const matchTerms = [sLower];
+      if (typeof AuthService !== "undefined" && typeof AuthService.getAllUsers === "function") {
+        try {
+          const u = AuthService.getAllUsers().find(x => 
+            (x.name && x.name.toLowerCase() === sLower) || 
+            (x.username && x.username.toLowerCase() === sLower)
+          );
+          if (u) {
+            if (u.name) matchTerms.push(u.name.toLowerCase().trim());
+            if (u.username) matchTerms.push(u.username.toLowerCase().trim());
+          }
+        } catch (e) {}
+      }
+      list = list.filter(t => {
+        if (!t.staff) return false;
+        const tsLower = t.staff.toLowerCase().trim();
+        return matchTerms.some(m => tsLower === m || tsLower.includes(m) || m.includes(tsLower));
+      });
     }
 
     return _deepClone(list.slice(0, limit));
@@ -9650,15 +9664,28 @@ const DataService = (() => {
    */
   function getStaffList() {
     const staffSet = new Set();
+
+    // 1. Baca seluruh data user terdaftar dan aktif dari AuthService
+    if (typeof AuthService !== "undefined" && typeof AuthService.getAllUsers === "function") {
+      try {
+        const users = AuthService.getAllUsers();
+        users.forEach(u => {
+          if (u && u.name) staffSet.add(u.name.trim());
+        });
+      } catch (e) {
+        console.warn("[DataService] Gagal membaca user untuk getStaffList:", e);
+      }
+    }
+
+    // 2. Gabungkan nama-nama PIC yang tercatat di riwayat transaksi mutasi
     _transactions.forEach(t => {
       const s = (t.staff || "").trim();
-      if (s && s.toLowerCase() !== "satian" && s.toLowerCase() !== "super admin") {
+      if (s && s.toLowerCase() !== "super admin") {
         staffSet.add(s);
       }
     });
-    // Hanya tambahkan staf dan admin operasional
-    ["ragil", "angel", "chef", "barista", "gudang", "rey"].forEach(u => staffSet.add(u));
-    return Array.from(staffSet).sort();
+
+    return Array.from(staffSet).filter(Boolean).sort((a, b) => a.localeCompare("id", { sensitivity: "base" }));
   }
 
   /**
@@ -11474,16 +11501,6 @@ const AuthService = (() => {
   // Profil awal karyawan resmi Rimba Alam (Default PIN: 1234)
   // CATATAN PENTING: Akun Satian TIDAK ADA di sini dan TIDAK ADA di sheet!
   const DEFAULT_USERS = {
-    admin: {
-      username: "admin",
-      name: "Admin Rimba Alam",
-      role: "superadmin",
-      division: "ADMIN",
-      divisions: ["KITCHEN", "BAR", "PASTRY", "LAINNYA"],
-      pin: "1234",
-      avatar: "👔",
-      createdAt: "2026-01-01"
-    },
     ragil: {
       username: "ragil",
       name: "Ragil",
@@ -11599,21 +11616,16 @@ const AuthService = (() => {
           if (parsed.satian) {
             delete parsed.satian;
           }
-          // Pastikan admin Rimba Alam selalu ada dan berstatus superadmin
-          if (!parsed.admin) {
-            parsed.admin = { ...DEFAULT_USERS.admin };
-          } else {
-            parsed.admin.role = "superadmin";
-            parsed.admin.name = "Admin Rimba Alam";
-            if (!parsed.admin.divisions) {
-              parsed.admin.divisions = ["KITCHEN", "BAR", "PASTRY", "LAINNYA"];
-            }
+          // Pastikan akun lama admin dan satian tidak tersimpan di memori lokal
+          if (parsed.admin) {
+            delete parsed.admin;
           }
           _inMemoryUsers = parsed;
           return _inMemoryUsers;
         } else {
           _inMemoryUsers = JSON.parse(JSON.stringify(DEFAULT_USERS));
           delete _inMemoryUsers.satian;
+          delete _inMemoryUsers.admin;
           _saveUsers(_inMemoryUsers);
           return _inMemoryUsers;
         }
@@ -11628,6 +11640,7 @@ const AuthService = (() => {
   function _saveUsers(users) {
     const cleaned = { ...users };
     delete cleaned.satian;
+    delete cleaned.admin;
     _inMemoryUsers = cleaned;
     try {
       if (typeof window !== "undefined" && window.localStorage) {
@@ -11641,7 +11654,7 @@ const AuthService = (() => {
   /** Ambil semua daftar user (Tanpa Satian) */
   function getAllUsers() {
     const usersObj = _loadUsers();
-    return Object.values(usersObj).filter(u => u && u.username && u.username.toLowerCase() !== "satian");
+    return Object.values(usersObj).filter(u => u && u.username && u.username.toLowerCase() !== "satian" && u.username.toLowerCase() !== "admin");
   }
 
   /** Simpan sesi aktif */
@@ -11777,9 +11790,7 @@ const AuthService = (() => {
 
     // 3. Cek pencocokan alias resmi karyawan jika belum ketemu
     if (!userKey) {
-      if (cleanInput === "admin" && users["admin"]) {
-        userKey = "admin";
-      } else if (cleanInput.includes("ragil") && users["ragil"]) {
+      if (cleanInput.includes("ragil") && users["ragil"]) {
         userKey = "ragil";
       } else if (cleanInput.includes("angel") && users["angel"]) {
         userKey = "angel";
@@ -11857,21 +11868,21 @@ const AuthService = (() => {
     const u = _getSession();
     if (!u) return false;
     const un = (u.username || "").toLowerCase();
-    return u.role === "superadmin" || un === "satian" || un === "admin" || un === "rimba";
+    return u.role === "superadmin" || un === "satian";
   }
 
   function canManageUsers() {
     const u = _getSession();
     if (!u) return false;
     const un = (u.username || "").toLowerCase();
-    return u.role === "superadmin" || un === "satian" || un === "admin" || un === "rimba" || u.role === "admin";
+    return u.role === "superadmin" || un === "satian" || u.role === "admin";
   }
 
   function isAdmin() {
     const u = _getSession();
     if (!u) return false;
     const un = (u.username || "").toLowerCase();
-    return u.role === "admin" || u.role === "superadmin" || un === "satian" || un === "admin" || un === "rimba" || un === "ragil" || un === "angel";
+    return u.role === "admin" || u.role === "superadmin" || un === "satian";
   }
 
   function isAdminOnly() {
@@ -11892,8 +11903,8 @@ const AuthService = (() => {
     const u = _getSession();
     if (!u) return false;
     const un = (u.username || "").toLowerCase();
-    if (un === "satian") return false;
-    return u.role === "admin" || u.role === "superadmin" || un === "admin" || un === "ragil" || un === "angel";
+    // Owner (satian) & Admin memiliki akses penuh melihat nominal uang & laporan
+    return u.role === "admin" || u.role === "superadmin" || un === "satian";
   }
 
   function getUserDivision() {
@@ -11908,10 +11919,8 @@ const AuthService = (() => {
     const u = _getSession();
     if (!u) return false;
     const un = (u.username || "").toLowerCase();
-    if (un === "satian") {
-      return false; // Satian (Owner) fokus kelola sistem & web
-    }
-    if (u.role === "admin" || u.role === "superadmin" || un === "admin" || u.division === "ADMIN" || u.division === "ALL") {
+    // Superadmin / Owner / Admin memiliki akses penuh ke seluruh divisi
+    if (u.role === "admin" || u.role === "superadmin" || un === "satian" || u.division === "ADMIN" || u.division === "ALL") {
       return true;
     }
     const cleanItemDiv = (itemDiv || "").toUpperCase();
@@ -11935,8 +11944,10 @@ const AuthService = (() => {
 
   function getAllowedDivisions() {
     const u = _getSession();
-    if (!u || u.username === "satian") return [];
-    if (u.role === "admin" || u.role === "superadmin" || u.division === "ADMIN" || u.division === "ALL") {
+    if (!u) return [];
+    const un = (u.username || "").toLowerCase();
+    // Owner & Admin mendapatkan seluruh divisi
+    if (u.role === "admin" || u.role === "superadmin" || un === "satian" || u.division === "ADMIN" || u.division === "ALL") {
       return ["KITCHEN", "BAR", "PASTRY", "LAINNYA"];
     }
     if (Array.isArray(u.divisions) && u.divisions.length > 0) {
@@ -11958,10 +11969,6 @@ const AuthService = (() => {
   function canInputStock() {
     const u = _getSession();
     if (!u) return false;
-    const un = (u.username || "").toLowerCase();
-    if (un === "satian") {
-      return false;
-    }
     return true;
   }
 
@@ -12144,8 +12151,8 @@ const AuthService = (() => {
       return { success: false, message: "Akses ditolak: Hanya Admin / Super Admin yang dapat menghapus user." };
     }
 
-    if (username === "satian" || username === "admin") {
-      return { success: false, message: "Akun Super Admin utama tidak dapat dihapus." };
+    if (username === "satian") {
+      return { success: false, message: "Akun Owner utama tidak dapat dihapus." };
     }
 
     const users = _loadUsers();
@@ -12180,8 +12187,8 @@ const AuthService = (() => {
       return { success: false, message: "Akses ditolak: Hanya Admin / Super Admin yang dapat mengubah kategori user." };
     }
 
-    if (username === "satian" || username === "admin") {
-      return { success: false, message: "Kategori Super Admin utama tidak dapat diubah." };
+    if (username === "satian") {
+      return { success: false, message: "Kategori Owner utama tidak dapat diubah." };
     }
 
     const users = _loadUsers();
@@ -12330,7 +12337,7 @@ const AuthService = (() => {
       const currentUsers = _loadUsers();
       data.users.forEach(u => {
         const uName = String(u.username || "").toLowerCase().trim();
-        if (!uName || uName === "satian") return; // Satian tidak boleh masuk
+        if (!uName || uName === "satian" || uName === "admin") return; // Satian & Admin lama tidak boleh masuk
         currentUsers[uName] = {
           username: uName,
           name: u.name || uName,
@@ -12592,11 +12599,10 @@ const App = (() => {
       if (loginEl) loginEl.style.display = "none";
       if (mainEl) mainEl.style.display = "flex";
 
-      // Navigasi Input: Akun Super Admin Satian TIDAK memiliki tombol input sama sekali
-      const isSuper = AuthService.isSuperAdmin();
+      // Navigasi Input: Tombol input aktif untuk semua pengguna yang berhak
       const navInput = document.getElementById("navItemInput");
       if (navInput) {
-        navInput.style.display = isSuper ? "none" : "";
+        navInput.style.display = "";
       }
 
       renderProfileBar();
@@ -12620,10 +12626,6 @@ const App = (() => {
     const btnSettings = document.getElementById("btnSettingsTopBar");
     if (btnSettings) {
       btnSettings.style.display = isAdmin ? "flex" : "none";
-    }
-    const btnAskAi = document.getElementById("btnAskAi");
-    if (btnAskAi) {
-      btnAskAi.style.display = "flex";
     }
 
     document.querySelectorAll(".profile-bar").forEach(bar => {
@@ -16455,17 +16457,20 @@ if (typeof document !== "undefined") {
 <script>
 /* ═══════════════════════════════════════════════════════════════════════
    ASISTEN STOK — modul mandiri. Tidak mengubah fungsi lain di aplikasi.
+   Sesi chat: SELALU BARU tiap dibuka. Tutup chat = percakapan dihapus,
+   tidak disimpan ke mana pun (tidak ada sessionStorage/localStorage).
    Ikon bisa diganti: App.setAskAiIcon("✨") / URL gambar / data URI.
    ═══════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
 
   var ICON_KEY = "rimba_ai_icon_v1";
-  var LOG_KEY = "rimba_ai_chatlog_v1";
   var DEFAULT_ICON = "💬";
   var MAX_TURNS_SENT = 2;
 
-  var state = { log: [], topic: "", busy: false };
+  // log hanya hidup di memori. gen dinaikkan tiap sesi ditutup, supaya
+  // jawaban yang telat datang tidak "menghidupkan" chat yang sudah ditutup.
+  var state = { log: [], topic: "", busy: false, gen: 0 };
 
   /* ── Ikon kustom ─────────────────────────────────────────────── */
   function getIcon() {
@@ -16506,23 +16511,6 @@ if (typeof document !== "undefined") {
   function setIcon(v) {
     try { localStorage.setItem(ICON_KEY, String(v || "").trim()); } catch (e) {}
     renderIcon();
-  }
-
-  /* ── Simpan percakapan (hanya di HP karyawan) ─────────────────── */
-  function loadLog() {
-    try {
-      var raw = sessionStorage.getItem(LOG_KEY);
-      state.log = raw ? JSON.parse(raw) : [];
-      for (var i = state.log.length - 1; i >= 0; i--) {
-        if (state.log[i].topic) { state.topic = state.log[i].topic; break; }
-      }
-    } catch (e) { state.log = []; }
-  }
-
-  function saveLog() {
-    try {
-      sessionStorage.setItem(LOG_KEY, JSON.stringify(state.log.slice(-30)));
-    } catch (e) {}
   }
 
   function sentTurns() {
@@ -16621,6 +16609,29 @@ if (typeof document !== "undefined") {
     renderIcon();
   }
 
+  /* Tombol 💬 dipasang sendiri oleh modul ini, jadi index.html tidak perlu
+     diubah lagi tiap kali aplikasi kamu update. */
+  function injectButton() {
+    if (document.getElementById("btnAskAi")) return true;
+    var anchor = document.querySelector('.top-bar [title="Pengaturan PIN Karyawan"]');
+    var host = anchor ? anchor.parentNode : document.querySelector(".top-bar");
+    if (!host) return false;
+
+    var btn = document.createElement("button");
+    btn.className = "top-bar-action";
+    btn.id = "btnAskAi";
+    btn.title = "Tanya Stok";
+    btn.innerHTML = '<span id="askAiBtnIcon" style="display:inline-flex;align-items:center;justify-content:center;font-size:18px;line-height:1;">' + DEFAULT_ICON + '</span>';
+    btn.addEventListener("click", function (e) {
+      e.preventDefault();
+      open();
+    });
+
+    if (anchor && anchor.parentNode === host) host.insertBefore(btn, anchor);
+    else host.appendChild(btn);
+    return true;
+  }
+
   function bubble(role, text) {
     ensureUI();
     var thread = document.getElementById("askAiThread");
@@ -16684,6 +16695,7 @@ if (typeof document !== "undefined") {
 
   function ask(q) {
     ensureUI();
+    var gen = state.gen;              // sesi saat pertanyaan dikirim
     state.busy = true;
     // Riwayat dihitung SEBELUM pertanyaan baru masuk, supaya pertanyaan ini tidak terkirim dua kali
     var hist = sentTurns();
@@ -16691,7 +16703,6 @@ if (typeof document !== "undefined") {
     if (sendBtn) sendBtn.disabled = true;
 
     state.log.push({ role: "user", text: q });
-    saveLog();
     renderThread();
     bubble("typing");
 
@@ -16718,6 +16729,7 @@ if (typeof document !== "undefined") {
         return res.json();
       })
       .then(function (data) {
+        if (gen !== state.gen) return;   // chat sudah ditutup → buang jawabannya
         clearTyping();
         if (data && data.success && data.answer) {
           if (data.topic) state.topic = data.topic;
@@ -16725,16 +16737,16 @@ if (typeof document !== "undefined") {
         } else {
           state.log.push({ role: "sys", text: friendlyError(data) });
         }
-        saveLog();
         renderThread();
       })
       .catch(function (err) {
+        if (gen !== state.gen) return;
         clearTyping();
         state.log.push({ role: "sys", text: "Gagal menghubungi server (" + err.message + ")." });
-        saveLog();
         renderThread();
       })
       .then(function () {
+        if (gen !== state.gen) return;
         state.busy = false;
         var b = document.getElementById("askAiSend");
         if (b) b.disabled = false;
@@ -16747,9 +16759,10 @@ if (typeof document !== "undefined") {
       if (window.App && window.App.showToast) window.App.showToast("Login dulu untuk memakai asisten.", "error");
       return;
     }
+    injectButton();
     ensureUI();
+    reset();                      // tiap buka = percakapan baru
     renderIcon();
-    renderThread();
     var dlg = document.getElementById("askAiDialog");
     if (dlg) dlg.classList.add("show");
     setTimeout(function () {
@@ -16758,23 +16771,28 @@ if (typeof document !== "undefined") {
     }, 250);
   }
 
+  function reset() {
+    state.gen++;                 // jawaban lama yang masih di jalan jadi tidak dipakai
+    state.log = [];
+    state.topic = "";
+    state.busy = false;
+    var b = document.getElementById("askAiSend");
+    if (b) b.disabled = false;
+    clearTyping();
+    renderThread();
+  }
+
   function close() {
     var dlg = document.getElementById("askAiDialog");
     if (dlg) dlg.classList.remove("show");
-  }
-
-  function reset() {
-    state.log = [];
-    state.topic = "";
-    try { sessionStorage.removeItem(LOG_KEY); } catch (e) {}
-    renderThread();
+    reset();                      // tutup = percakapan dihapus
   }
 
   /* ── Pasang ke App + saat halaman siap ───────────────────────── */
   function boot() {
+    injectButton();
     ensureUI();
     renderIcon();
-    loadLog();
     if (window.App) {
       window.App.openAskAi = open;
       window.App.closeAskAi = close;
