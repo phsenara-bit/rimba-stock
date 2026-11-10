@@ -2651,7 +2651,7 @@ function _aiCall_(prompt) {
       headers: { "x-goog-api-key": key },
       payload: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.45, maxOutputTokens: 400 }
+        generationConfig: { temperature: 0.45, maxOutputTokens: 300 }
       }),
       muteHttpExceptions: true
     });
@@ -2676,7 +2676,7 @@ function _aiCall_(prompt) {
     payload: JSON.stringify({
       model: model,
       temperature: 0.45,
-      max_tokens: 400,
+      max_tokens: 300,
       messages: [{ role: "user", content: prompt }]
     }),
     muteHttpExceptions: true
