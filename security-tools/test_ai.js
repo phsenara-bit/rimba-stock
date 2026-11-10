@@ -281,6 +281,28 @@ console.log("\n=== 10. Log mutasi (pembaca MUTASI_APP) ===");
   ok("teks menyebut penginput", /diinput oleh: Budi/.test(txt));
 }
 
+console.log("\n=== 11. Pilihan periode (bulan lain) ===");
+{
+  const ctx = makeCtx(buildFakeData());
+  const tm = (q) => vm.runInContext("_aiTargetMonth_", ctx)(q);
+  const nowM = new Date().getMonth() + 1, nowY = new Date().getFullYear();
+
+  const okt = tm("stok oktober gimana?");
+  ok("nama bulan dikenali", okt.month === 10 && okt.year === nowY && okt.explicit === true, JSON.stringify(okt));
+  const okt25 = tm("kenapa minus oktober 2025");
+  ok("tahun eksplisit dipakai", okt25.month === 10 && okt25.year === 2025, JSON.stringify(okt25));
+  const prev = tm("ringkas stok bulan lalu");
+  ok("bulan lalu dihitung benar", prev.month === (nowM === 1 ? 12 : nowM - 1) && prev.explicit === true, JSON.stringify(prev));
+  const def = tm("stok ayam berapa?");
+  ok("tanpa nama bulan = bulan ini", def.month === nowM && def.year === nowY && def.explicit === false, JSON.stringify(def));
+
+  // bulan lain yang tabnya tidak ada → mode kosong, jujur, tanpa angka bulan ini
+  const facts = vm.runInContext("_aiFacts_", ctx)("stok desember 2019 masih ada?");
+  ok("periode tanpa tab → mode kosong", facts.mode === "kosong", JSON.stringify(facts).slice(0, 150));
+  ok("periode kosong tidak memakai angka bulan ini", !/Nilai stok \(aset\)/.test(facts.text) && /belum ada/.test(facts.text), facts.text.slice(0, 120));
+  ok("label periode benar", /Desember 2019/.test(facts.period), facts.period);
+}
+
 console.log("\n───────────────────────────────");
 console.log((fail === 0 ? "SEMUA LULUS" : "ADA YANG GAGAL") + ": " + pass + " lulus, " + fail + " gagal");
 process.exit(fail === 0 ? 0 : 1);

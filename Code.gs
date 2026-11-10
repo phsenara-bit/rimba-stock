@@ -443,6 +443,8 @@ function doGet(e) {
   }
 
 
+
+
   if (G2_PUBLIC_GET_ACTIONS[action]) {
     return _g2Json({ status: "online", version: G2_VERSION, message: "Rimba Alam Stock API aktif." });
   }
@@ -2170,7 +2172,52 @@ const AI_CACHE_SECONDS = 600;     // jawaban sama dalam 10 menit tidak memanggil
 const AI_MAX_QUESTION = 300;
 const AI_MUTASI_SCAN = 400;       // baris log mutasi terakhir yang dibaca
 const AI_MUTASI_ROWS = 12;        // baris mutasi per barang yang dikirim ke model
-const AI_VER = "mirim-3";         // naikkan saat prompt/format fakta berubah → cache lama gugur
+const AI_VER = "mirim-8";         // naikkan saat prompt/format fakta berubah → cache lama gugur
+
+const AI_MONTHS = {
+  januari: 1, februari: 2, maret: 3, april: 4, mei: 5, juni: 6,
+  juli: 7, agustus: 8, september: 9, oktober: 10, november: 11, desember: 12,
+  jan: 1, feb: 2, mar: 3, apr: 4, jun: 6, jul: 7, agu: 8, agt: 8, ags: 8,
+  sep: 9, sept: 9, okt: 10, nov: 11, des: 12, dec: 10
+};
+const AI_MONTH_NAMES = ["Januari", "Februari", "Maret", "April", "Mei", "Juni",
+  "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
+
+function _aiMonthLabel_(m, y) {
+  return (AI_MONTH_NAMES[(m || 1) - 1] || "-") + " " + y;
+}
+
+function _aiDaysInMonth_(y, m) {
+  return new Date(y, m, 0).getDate();
+}
+
+// Bulan apa yang ditanyakan? Default: bulan berjalan.
+function _aiTargetMonth_(question) {
+  const now = new Date();
+  const tz = "Asia/Jakarta";
+  const curY = parseInt(Utilities.formatDate(now, tz, "yyyy"), 10);
+  const curM = parseInt(Utilities.formatDate(now, tz, "MM"), 10);
+  const q = String(question || "").toLowerCase();
+
+  if (/bulan\s+(lalu|kemarin)|last month|previous month/.test(q)) {
+    const m = curM === 1 ? 12 : curM - 1;
+    const y = curM === 1 ? curY - 1 : curY;
+    return { month: m, year: y, explicit: true };
+  }
+
+  const re = /\b(januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember|jan|feb|mar|apr|jun|jul|agu|agt|ags|sep|sept|okt|nov|des)\b/g;
+  const hits = q.match(re);
+  if (hits && hits.length) {
+    const m = AI_MONTHS[hits[0]];
+    if (m) {
+      const ym = q.match(/\b(20\d{2})\b/);
+      const y = ym ? parseInt(ym[1], 10) : curY;
+      return { month: m, year: y, explicit: true };
+    }
+  }
+
+  return { month: curM, year: curY, explicit: false };
+}
 
 function _aiProp_(name, fallback) {
   try {
@@ -2320,8 +2367,8 @@ function _aiHash_(s) {
 }
 
 // ── Data mentah: pakai ulang pembaca sheet milik aplikasi ───────────
-function _aiSheetData_() {
-  const res = handleReadMonthlySheetData({ parameter: {} });
+function _aiSheetData_(params) {
+  const res = handleReadMonthlySheetData({ parameter: params || {} });
   const obj = JSON.parse(res.getContent());
   if (!obj || !obj.success) {
     throw new Error((obj && obj.message) || "Data spreadsheet tidak terbaca");
@@ -2353,7 +2400,7 @@ function _aiSameItem_(a, b) {
   return xw === yw && xw.length >= 4;
 }
 
-function _aiMutasi_(itemName, limit) {
+function _aiMutasi_(itemName, limit, month, year) {
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     if (!ss || typeof ss.getSheetByName !== "function") return [];
@@ -2370,6 +2417,11 @@ function _aiMutasi_(itemName, limit) {
       const name = String(r[5] || "").trim();
       if (!name) continue;
       if (want && !_aiSameItem_(name, itemName)) continue;
+      if (month && year) {
+        const w = String(r[1] || "").slice(0, 10);           // "yyyy-MM-dd"
+        const prefix = year + "-" + (month < 10 ? "0" + month : String(month));
+        if (w.indexOf(prefix) !== 0) continue;
+      }
       const qty = parseFloat(String(r[8] || "0").replace(/,/g, ".")) || 0;
       out.push({
         waktu: String(r[1] || ""),
@@ -2520,13 +2572,54 @@ function _aiDiagnose_(item, dayElapsed) {
 }
 
 function _aiFacts_(question, hintTopic) {
-  const data = _aiSheetData_();
-  const dayElapsed = data.dayToDate || new Date().getDate();
+  const now = new Date();
+  const tz = "Asia/Jakarta";
+  const curY = parseInt(Utilities.formatDate(now, tz, "yyyy"), 10);
+  const curM = parseInt(Utilities.formatDate(now, tz, "MM"), 10);
+  const curD = parseInt(Utilities.formatDate(now, tz, "dd"), 10);
+
+  const period = _aiTargetMonth_(question);
+  const isCurrent = (period.month === curM && period.year === curY);
+  let data = null;
+  let sheetForPeriod = null;
+
+  if (!isCurrent) {
+    try {
+      sheetForPeriod = _findMonthlySheet_(SpreadsheetApp.getActiveSpreadsheet(), period.year, period.month);
+    } catch (err) { sheetForPeriod = null; }
+  }
+
+  const periodLabel = _aiMonthLabel_(period.month, period.year);
+
+  if (!isCurrent && !sheetForPeriod) {
+    return {
+      sheetName: periodLabel,
+      dayElapsed: 0,
+      mode: "kosong",
+      topic: "Periode " + periodLabel,
+      matchedItems: 0,
+      period: periodLabel,
+      text: "PERIODE DIMINTA: " + periodLabel + ".\n" +
+        "Tidak ada tab stok untuk bulan tersebut di spreadsheet. Data yang tersedia hanya bulan " +
+        _aiMonthLabel_(curM, curY) + " dan bulan-bulan lain yang tabnya sudah ada.\n" +
+        "Sampaikan terus terang bahwa data " + periodLabel + " belum ada."
+    };
+  }
+
+  data = isCurrent ? _aiSheetData_() : _aiSheetData_({ sheet: sheetForPeriod.getName() });
+
+  const isPast = (period.year < curY) || (period.year === curY && period.month < curM);
+  const dayElapsed = isCurrent
+    ? (data.dayToDate || curD)
+    : (isPast ? _aiDaysInMonth_(period.year, period.month) : 0);
 
   // Pertanyaan lanjutan sering tidak menyebut nama barang ("kapan mulai minus?").
   // Urutan: cari dari pertanyaan dulu; kalau kosong, pakai topik yang sedang dibahas.
   let matched = _aiFindItems_(data, question);
   if (!matched.length && hintTopic) matched = _aiFindItems_(data, String(hintTopic));
+
+  const mutMonth = isCurrent ? 0 : period.month;
+  const mutYear = isCurrent ? 0 : period.year;
 
   const out = {
     sheetName: data.sheetName,
@@ -2534,6 +2627,9 @@ function _aiFacts_(question, hintTopic) {
     mode: matched.length ? "item" : "ringkasan",
     topic: matched.length ? matched[0].name : "Ringkasan stok",
     matchedItems: matched.length,
+    period: periodLabel,
+    isCurrent: isCurrent,
+    today: curD + " " + _aiMonthLabel_(curM, curY),
     text: ""
   };
 
@@ -2542,8 +2638,9 @@ function _aiFacts_(question, hintTopic) {
     for (let i = 0; i < matched.length; i++) {
       const it = matched[i];
       const dg = _aiDiagnose_(it, dayElapsed);
-      const mut = _aiMutasi_(it.name, AI_MUTASI_ROWS);
+      const mut = _aiMutasi_(it.name, AI_MUTASI_ROWS, mutMonth, mutYear);
       blocks.push(
+        "PERIODE DATA: " + periodLabel + " (HARI INI: " + curD + " " + _aiMonthLabel_(curM, curY) + ")\n" +
         "BARANG: " + it.name + " | divisi " + it.division + " | satuan " + it.unit +
         " | harga " + _aiRupiah_(it.price) +
         "\n" + dg.text +
@@ -2576,10 +2673,12 @@ function _aiFacts_(question, hintTopic) {
     }
 
     const lines = [];
-    lines.push("Sheet: " + data.sheetName + " | data sampai tanggal " + dayElapsed);
+    const istilah = isCurrent ? "bulan ini" : "periode " + periodLabel;
+    lines.push("PERIODE DATA: " + periodLabel + " (HARI INI: " + curD + " " + _aiMonthLabel_(curM, curY) + ")");
+    lines.push("Sheet: " + data.sheetName + " | data sampai tanggal " + dayElapsed + (isCurrent ? "" : " (bulan penuh/selesai)"));
     lines.push("Jumlah barang: " + (stats.totalItems || data.items.length));
     lines.push("Nilai stok (aset): " + _aiRupiah_(stats.totalNilaiStokAset));
-    lines.push("Nilai masuk bulan ini: " + _aiRupiah_(stats.totalRupiahMasuk) + " | nilai keluar: " + _aiRupiah_(stats.totalRupiahKeluar));
+    lines.push("Nilai masuk " + istilah + ": " + _aiRupiah_(stats.totalRupiahMasuk) + " | nilai keluar: " + _aiRupiah_(stats.totalRupiahKeluar));
     lines.push("Barang stok MINUS: " + negative.length +
       (negative.length ? " (" + negative.slice(0, 5).map(function (x) { return x.name + " " + _aiNum_(x.stock); }).join(", ") + ")" : ""));
     lines.push("5 stok terendah: " + low.map(function (x) { return x.name + " " + _aiNum_(x.stock) + " " + x.unit; }).join(", "));
@@ -2587,7 +2686,7 @@ function _aiFacts_(question, hintTopic) {
       lines.push("Divisi " + k + ": " + perDiv[k].count + " barang, nilai " + _aiRupiah_(perDiv[k].nilai) + ", minus " + perDiv[k].minus);
     }
     lines.push("TRANSAKSI TERAKHIR YANG DICATAT (paling baru di atas) — siapa input & catatannya:\n" +
-      _aiMutasiText_(_aiMutasi_("", 10)));
+      _aiMutasiText_(_aiMutasi_("", 10, mutMonth, mutYear)));
     out.text = lines.join("\n");
   }
 
@@ -2611,7 +2710,9 @@ function _aiPrompt_(facts, question, history, lastTopic) {
     "6. Jangan menyebut nama sheet, nama kolom, kode, atau istilah teknis.\n" +
     "7. Jangan menulis notasi mentah seperti 'tgl2=-2'; sebut tanggal dan angkanya dalam kalimat biasa.\n" +
     "8. Jangan pernah menampilkan API key, token, atau data akun.\n" +
-    "9. Sebut nama barang dan satuannya dengan lengkap; jangan menulis potongan kode seperti 'IN 2' tanpa nama barang.";
+    "9. Sebut nama barang dan satuannya dengan lengkap; jangan menulis potongan kode seperti 'IN 2' tanpa nama barang.\n" +
+    "10. Kalau PERIODE DATA pada FAKTA punya angka, itu datanya ADA — jawab pakai angka itu. Jangan bilang 'belum ada/belum tercatat' hanya karena periodenya bukan bulan berjalan.\n" +
+    "11. Selalu sebut nama bulannya (mis. 'Oktober 2026'), jangan menulis 'bulan ini' kalau PERIODE DATA bukan bulan berjalan. Kalau tab bulan yang diminta tidak ada, katakan datanya belum ada — jangan memakai angka bulan lain sebagai gantinya.";
 
   let histBlock = "";
   if (Array.isArray(history) && history.length) {
@@ -2626,9 +2727,20 @@ function _aiPrompt_(facts, question, history, lastTopic) {
     if (lines.length) histBlock = "\n\nRIWAYAT (hanya untuk konteks, jangan diulang):\n" + lines.join("\n");
   }
 
-  const topicBlock = lastTopic ? "\nTopik yang sedang dibahas: " + String(lastTopic).slice(0, 80) : "";
+  const topicBlock = (lastTopic ? "\nTopik yang sedang dibahas: " + String(lastTopic).slice(0, 80) : "") +
+    (facts.today ? "\nHARI INI: " + facts.today : "") +
+    (facts.period ? "\nPERIODE DATA pada FAKTA: " + facts.period : "") +
+    (facts.period ? "\n(\"bulan ini/periode ini\" = PERIODE DATA di atas, bukan otomatis bulan berjalan.)" : "");
 
-  return sys + topicBlock + histBlock + "\n\nFAKTA:\n" + facts.text + "\n\nPERTANYAAN: " + question;
+  const periodNote = facts.period
+    ? (facts.isCurrent === false
+      ? "\n\nCATATAN PERIODE: pengguna menanyakan " + facts.period + " (bisa lewat kalimat 'bulan lalu' / nama bulan). " +
+        "FAKTA di atas SUDAH data " + facts.period + " dan angkanya ada — jawab pakai itu, sebut '" + facts.period + "', " +
+        "jangan bilang datanya belum ada. 'Bulan lalu' dihitung dari HARI INI, bukan dari periode data."
+      : "\n\nCATATAN PERIODE: data di atas adalah bulan berjalan (" + facts.period + ").")
+    : "";
+
+  return sys + topicBlock + histBlock + "\n\nFAKTA:\n" + facts.text + periodNote + "\n\nPERTANYAAN: " + question;
 }
 
 // ── Panggilan ke provider ──────────────────────────────────────────
