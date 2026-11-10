@@ -102,6 +102,8 @@ function makeCtx(fakeData) {
   ctx.handleReadMonthlySheetData = () => ({
     getContent: () => JSON.stringify(fakeData)
   });
+  props.AI_KEY = "test-key";
+  props.AI_PROVIDER = "gemini";
   ctx.__props = props;
   return ctx;
 }
@@ -169,7 +171,8 @@ console.log("\n=== 4. Kuota harian ===");
   sandbox.__mock = "jawaban uji";
   vm.runInContext("_aiCall_ = function(p){ return 'jawaban uji'; };", ctx);
 
-  const user = { username: "chef" };
+  ctx.__props.AI_DAILY_LIMIT = "30";
+  const user = { username: "chef", role: "admin" };
   const call = (q) => {
     const r = vm.runInContext("handleAskAI_", ctx)({ parameter: { q: q } }, user, null);
     return JSON.parse(r.getContent());
@@ -186,7 +189,7 @@ console.log("\n=== 4. Kuota harian ===");
   ok("setelah batas → QUOTA", blocked.success === false && blocked.code === "QUOTA", JSON.stringify(blocked));
 
   // user lain punya kuota sendiri
-  const other = vm.runInContext("handleAskAI_", ctx)({ parameter: { q: "stok ayam" } }, { username: "barista" }, null);
+  const other = vm.runInContext("handleAskAI_", ctx)({ parameter: { q: "stok ayam" } }, { username: "barista", role: "admin" }, null);
   ok("user lain masih boleh", JSON.parse(other.getContent()).success === true);
 }
 
@@ -195,7 +198,7 @@ console.log("\n=== 5. Cache jawaban identik ===");
   const ctx = makeCtx(buildFakeData());
   let calls = 0;
   vm.runInContext("_aiCall_ = function(p){ __hit = (typeof __hit==='number'?__hit:0)+1; return 'jawaban cache'; };", ctx);
-  const user = { username: "admin" };
+  const user = { username: "admin", role: "admin" };
   const r1 = JSON.parse(vm.runInContext("handleAskAI_", ctx)({ parameter: { q: "stok ayam" } }, user, null).getContent());
   const r2 = JSON.parse(vm.runInContext("handleAskAI_", ctx)({ parameter: { q: "stok ayam" } }, user, null).getContent());
   ok("panggilan kedua ditandai cached", r2.cached === true, JSON.stringify(r2).slice(0, 100));
@@ -206,14 +209,76 @@ console.log("\n=== 6. Guard input & error ===");
 {
   const ctx = makeCtx(buildFakeData());
   vm.runInContext("_aiCall_ = function(p){ return 'x'; };", ctx);
-  const empty = JSON.parse(vm.runInContext("handleAskAI_", ctx)({ parameter: { q: "" } }, { username: "a" }, null).getContent());
+  const empty = JSON.parse(vm.runInContext("handleAskAI_", ctx)({ parameter: { q: "" } }, { username: "a", role: "admin" }, null).getContent());
   ok("pertanyaan kosong ditolak", empty.success === false && empty.code === "EMPTY");
 
   const broken = makeCtx(buildFakeData());
   broken.handleReadMonthlySheetData = () => ({ getContent: () => JSON.stringify({ success: false, message: "Sheet hilang" }) });
-  const err = JSON.parse(vm.runInContext("handleAskAI_", broken)({ parameter: { q: "stok ayam" } }, { username: "a" }, null).getContent());
+  const err = JSON.parse(vm.runInContext("handleAskAI_", broken)({ parameter: { q: "stok ayam" } }, { username: "a", role: "admin" }, null).getContent());
   ok("sheet rusak → FAILED (pesan generik)", err.success === false && err.code === "FAILED", JSON.stringify(err));
   ok("tidak membocorkan detail internal", !/Sheet hilang/.test(err.message), err.message);
+}
+
+console.log("\n=== 7. Akses khusus admin ===");
+{
+  const ctx = makeCtx(buildFakeData());
+  vm.runInContext("_aiCall_ = function(p){ return 'ok'; };", ctx);
+  const deny = (u) => JSON.parse(vm.runInContext("handleAskAI_", ctx)({ parameter: { q: "stok ayam" } }, u, null).getContent());
+  const staff = deny({ username: "chef", role: "staff" });
+  ok("staff ditolak FORBIDDEN", staff.success === false && staff.code === "FORBIDDEN", JSON.stringify(staff));
+  const noRole = deny({ username: "x" });
+  ok("tanpa role ditolak", noRole.success === false && noRole.code === "FORBIDDEN");
+  const adm = deny({ username: "adm", role: "admin" });
+  ok("admin boleh", adm.success === true, JSON.stringify(adm).slice(0, 120));
+  const su = deny({ username: "satian", role: "superadmin" });
+  ok("superadmin boleh", su.success === true);
+  const ow = deny({ username: "owner1", role: "owner" });
+  ok("owner boleh", ow.success === true);
+}
+
+console.log("\n=== 8. Belum dikonfigurasi ===");
+{
+  const ctx = makeCtx(buildFakeData());
+  delete ctx.__props.AI_KEY;
+  const r = JSON.parse(vm.runInContext("handleAskAI_", ctx)({ parameter: { q: "stok ayam" } }, { username: "adm", role: "admin" }, null).getContent());
+  ok("tanpa AI_KEY → NOT_CONFIGURED", r.success === false && r.code === "NOT_CONFIGURED", JSON.stringify(r));
+}
+
+console.log("\n=== 9. Kepribadian Mirim & penolakan topik lain ===");
+{
+  const ctx = makeCtx(buildFakeData());
+  const facts = vm.runInContext("_aiFacts_", ctx)("kenapa ayam kampung minus?");
+  const prompt = vm.runInContext("_aiPrompt_", ctx)(facts, "kenapa ayam kampung minus?", [], "Ayam Kampung");
+  ok("nama Mirim ada di prompt", /Kamu Mirim/.test(prompt));
+  ok("instruksi ceria", /ceria/.test(prompt) && /emoji/.test(prompt));
+  ok("aturan tolak topik lain", /HANYA menjawab soal data stok/.test(prompt) && /TOLAK/.test(prompt));
+  ok("aturan anti prompt-injection", /mengabaikan aturan/.test(prompt));
+  ok("aturan sebut penginput", /siapa yang input/.test(prompt));
+  ok("fakta memuat blok transaksi + penginput", /TRANSAKSI TERAKHIR/.test(facts.text));
+  ok("fakta jujur saat catatan kosong", /TIDAK ADA CATATAN ALASAN|Tidak ada catatan transaksi/.test(facts.text), facts.text.slice(0, 160));
+}
+
+console.log("\n=== 10. Log mutasi (pembaca MUTASI_APP) ===");
+{
+  const vm2 = require("vm");
+  const ctx = makeCtx(buildFakeData());
+  const rows = [
+    ["TXN-1", "2026-11-08 09:12:00", "KITCHEN", "Sari", "15", "Ayam Kampung", "EKOR", "IN", 10, "beli pasar", 44000, 440000],
+    ["TXN-2", "2026-11-08 14:30:00", "KITCHEN", "Budi", "15", "Ayam Kampung", "EKOR", "OUT", 15, "", 44000, 660000],
+    ["TXN-3", "2026-11-08 15:00:00", "BAR", "Dewi", "55", "Soda Gembira", "PCS", "OUT", 2, "rusak", 8000, 16000],
+  ];
+  const sheet = {
+    getLastRow: () => rows.length + 1,
+    getRange: (r, c, nr, nc) => ({ getValues: () => rows.slice(Math.max(0, r - 2), Math.max(0, r - 2) + nr) })
+  };
+  ctx.SpreadsheetApp = { getActiveSpreadsheet: () => ({ getSheetByName: () => sheet }) };
+  vm2.runInContext("SpreadsheetApp = __ss;", Object.assign(ctx, { __ss: ctx.SpreadsheetApp }));
+  const got = vm2.runInContext("_aiMutasi_", ctx)("Ayam Kampung", 12);
+  ok("hanya barang yang diminta", got.length === 2 && got.every(x => x.barang === "Ayam Kampung"), JSON.stringify(got).slice(0, 120));
+  ok("nama penginput terbaca", got.map(x => x.staf).join(",") === "Budi,Sari", got.map(x => x.staf).join(","));
+  const txt = vm2.runInContext("_aiMutasiText_", ctx)(got);
+  ok("teks menandai catatan kosong", /TIDAK ADA CATATAN ALASAN/.test(txt), txt.slice(0, 120));
+  ok("teks menyebut penginput", /diinput oleh: Budi/.test(txt));
 }
 
 console.log("\n───────────────────────────────");

@@ -16489,8 +16489,8 @@ if (typeof document !== "undefined") {
     + '    <div id="askAiHead">'
     + '      <div id="askAiHeadIcon">💬</div>'
     + '      <div>'
-    + '        <div id="askAiTitle">Tanya Stok</div>'
-    + '        <div id="askAiSub">Jawaban dari data sheet bulan ini</div>'
+    + '        <div id="askAiTitle">Tanya Mirim</div>'
+    + '        <div id="askAiSub">Asisten stok Rimba Alam · khusus admin</div>'
     + '      </div>'
     + '      <button id="askAiClose" aria-label="Tutup">✕</button>'
     + '    </div>'
@@ -16499,12 +16499,13 @@ if (typeof document !== "undefined") {
     + '      <button class="askai-chip" data-q="Barang apa yang stoknya kritis?">Stok kritis</button>'
     + '      <button class="askai-chip" data-q="Nilai stok bulan ini berapa?">Nilai aset</button>'
     + '      <button class="askai-chip" data-q="Barang apa saja yang stoknya minus?">Yang minus</button>'
+    + '      <button class="askai-chip" data-q="Siapa yang terakhir input dan apa catatannya?">Siapa yang input</button>'
     + '    </div>'
     + '    <div id="askAiInputRow">'
-    + '      <textarea id="askAiInput" rows="1" placeholder="Tanya stok, misal: kenapa ayam minus?"></textarea>'
+    + '      <textarea id="askAiInput" rows="1" placeholder="Halo, mau tanya apa? Misal: kenapa ayam minus?"></textarea>'
     + '      <button id="askAiSend" aria-label="Kirim">➤</button>'
     + '    </div>'
-    + '    <div class="askai-note">Angka diambil dari sheet. Kalau ada kejanggalan, cek manual.</div>'
+    + '    <div class="askai-note">Mirim cuma bahas stok. Angka & penginput diambil dari catatan bulan ini.</div>'
     + '  </div>'
     + '</div>';
 
@@ -16544,6 +16545,7 @@ if (typeof document !== "undefined") {
   /* Tombol 💬 dipasang sendiri oleh modul ini, jadi index.html tidak perlu
      diubah lagi tiap kali aplikasi kamu update. */
   function injectButton() {
+    if (!canUseMirim()) return false;
     if (document.getElementById("btnAskAi")) return true;
     var anchor = document.querySelector('.top-bar [title="Pengaturan PIN Karyawan"]');
     var host = anchor ? anchor.parentNode : document.querySelector(".top-bar");
@@ -16552,7 +16554,7 @@ if (typeof document !== "undefined") {
     var btn = document.createElement("button");
     btn.className = "top-bar-action";
     btn.id = "btnAskAi";
-    btn.title = "Tanya Stok";
+    btn.title = "Tanya Mirim";
     btn.innerHTML = '<span id="askAiBtnIcon" style="display:inline-flex;align-items:center;justify-content:center;font-size:18px;line-height:1;">' + DEFAULT_ICON + '</span>';
     btn.addEventListener("click", function (e) {
       e.preventDefault();
@@ -16593,7 +16595,7 @@ if (typeof document !== "undefined") {
     if (!state.log.length) {
       var t = document.createElement("div");
       t.className = "askai-msg model";
-      t.textContent = "Halo! Tanya apa saja soal stok bulan ini — kenapa minus, kapan mulai minus, nilai aset, atau barang yang perlu dibeli.";
+      t.textContent = "Hallo! Mirim di sini 👋✨ Ada yang mau ditanya soal stok? Aku bisa cek stok, kenapa minus, sampai siapa yang input.";
       thread.appendChild(t);
       return;
     }
@@ -16612,7 +16614,10 @@ if (typeof document !== "undefined") {
     if (code === "QUOTA") return data.message || "Batas pertanyaan harian sudah tercapai.";
     if (code === "UNAUTHORIZED") return "Sesi kamu tidak valid. Logout lalu login lagi (nama + PIN).";
     if (code === "EMPTY") return "Pertanyaannya kosong.";
-    return "Asisten belum aktif di server. Pastikan Code.gs versi baru sudah di-deploy.";
+    if (code === "FORBIDDEN") return "Mirim khusus admin. Akun kamu belum punya akses.";
+    if (code === "NOT_CONFIGURED") return "Mirim belum aktif: kunci AI belum dipasang di server.";
+    if (code === "FAILED") return "Mirim lagi nggak bisa jawab. Coba lagi sebentar ya 🙏";
+    return "Mirim belum bisa dihubungi. Coba lagi sebentar ya.";
   }
 
   function submit() {
@@ -16686,9 +16691,23 @@ if (typeof document !== "undefined") {
   }
 
   /* ── Buka / tutup ────────────────────────────────────────────── */
+  // Mirim khusus admin. Server juga menolak akun non-admin, ini hanya lapisan UI.
+  function canUseMirim() {
+    try {
+      if (window.AuthService && typeof window.AuthService.isAdmin === "function") {
+        return !!window.AuthService.isAdmin();
+      }
+      var u = (window.AuthService && window.AuthService.getCurrentUser) ? window.AuthService.getCurrentUser() : null;
+      return !!(u && (u.role === "admin" || u.role === "superadmin" || u.role === "owner"));
+    } catch (e) { return false; }
+  }
+
   function open() {
-    if (!(window.AuthService && window.AuthService.getCurrentUser && window.AuthService.getCurrentUser())) {
-      if (window.App && window.App.showToast) window.App.showToast("Login dulu untuk memakai asisten.", "error");
+    if (!canUseMirim()) {
+      var me = (window.AuthService && window.AuthService.getCurrentUser) ? window.AuthService.getCurrentUser() : null;
+      if (window.App && window.App.showToast) {
+        window.App.showToast(me ? "Mirim khusus admin. Akun kamu belum punya akses." : "Login dulu untuk memakai Mirim.", "error");
+      }
       return;
     }
     injectButton();
@@ -16717,14 +16736,26 @@ if (typeof document !== "undefined") {
   function close() {
     var dlg = document.getElementById("askAiDialog");
     if (dlg) dlg.classList.remove("show");
+    var ta = document.getElementById("askAiInput");
+    if (ta) { ta.value = ""; ta.style.height = "auto"; }   // sisa teks yang belum terkirim ikut dibuang
     reset();                      // tutup = percakapan dihapus
   }
 
   /* ── Pasang ke App + saat halaman siap ───────────────────────── */
+  function syncButton() {
+    var btn = document.getElementById("btnAskAi");
+    if (!canUseMirim()) {
+      if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
+      return;
+    }
+    if (!btn) injectButton();
+  }
+
   function boot() {
-    injectButton();
     ensureUI();
+    syncButton();
     renderIcon();
+    setInterval(syncButton, 1500);   // ikut berubah saat login/logout atau ganti akun
     if (window.App) {
       window.App.openAskAi = open;
       window.App.closeAskAi = close;
