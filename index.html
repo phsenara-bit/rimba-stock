@@ -16471,8 +16471,6 @@ if (typeof document !== "undefined") {
     ".askai-msg.user{align-self:flex-end;background:var(--primary,#1e293b);color:#fff;border-bottom-right-radius:4px;}",
     ".askai-msg.model{align-self:flex-start;background:var(--surface-variant,#eef2f6);color:var(--on-surface,#0f172a);border-bottom-left-radius:4px;}",
     ".askai-msg.sys{align-self:center;background:#fef3c7;color:#92400e;font-size:.75rem;text-align:center;}",
-    "#askAiChips{display:flex;gap:6px;flex-wrap:wrap;}",
-    ".askai-chip{font-size:.72rem;padding:6px 10px;border-radius:999px;border:1px solid var(--outline-variant,#cbd5e1);background:transparent;color:var(--on-surface,#0f172a);cursor:pointer;}",
     "#askAiInputRow{display:flex;gap:8px;align-items:flex-end;}",
     "#askAiInput{flex:1;resize:none;max-height:90px;padding:10px 12px;border-radius:12px;border:1px solid var(--outline-variant,#cbd5e1);font-size:.85rem;font-family:inherit;background:var(--surface,#fff);color:inherit;}",
     "#askAiSend{width:42px;height:42px;border-radius:50%;border:0;background:var(--primary,#1e293b);color:#fff;font-size:1rem;cursor:pointer;}",
@@ -16534,13 +16532,6 @@ if (typeof document !== "undefined") {
     ta.addEventListener("input", function () {
       ta.style.height = "auto";
       ta.style.height = Math.min(ta.scrollHeight, 90) + "px";
-    });
-    Array.prototype.forEach.call(document.querySelectorAll(".askai-chip"), function (btn) {
-      btn.addEventListener("click", function () {
-        var q = btn.getAttribute("data-q");
-        ta.value = q;
-        submit();
-      });
     });
     renderIcon();
   }
