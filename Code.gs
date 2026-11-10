@@ -1,76 +1,96 @@
 /**
  * ════════════════════════════════════════════════════════════════════════════
- * RIMBA ALAM STOCK API — v3.3 (PIN-VERIFIED)
+ * RIMBA ALAM STOCK API — v4.0 (SESI TOKEN)
  * ════════════════════════════════════════════════════════════════════════════
- * Satu file. Cara pakai:
- *   1. Buka spreadsheet -> Ekstensi -> Apps Script
- *   2. Klik isi Code.gs, Ctrl+A, hapus, lalu paste SELURUH file ini
- *   3. Simpan (Ctrl+S)
- *   4. Deploy -> Manage deployments -> ikon pensil -> Version: New version
- *      -> Deploy        (JANGAN "New deployment", URL-nya berubah)
+ * Satu file. Cara pasang:
+ *   1. Spreadsheet → Ekstensi → Apps Script
+ *   2. Klik isi Code.gs → Ctrl+A → hapus → paste SELURUH file ini → Simpan
+ *   3. Deploy → Manage deployments → pensil → Version: New version → Deploy
+ *      (jangan "New deployment", URL-nya berubah)
  *
- * Perubahan dari v3.2:
- *   - doGet/doPost lama di-rename jadi _realDoGet/_realDoPost (isinya utuh)
- *   - ditambah gate PIN: setiap request wajib authUser + authPin yang cocok
- *     dengan tab DATA_PENGGUNA; PIN diverifikasi di server, bukan di browser
- *   - hapus user / ubah PIN orang lain: hanya Admin / Super Admin
- *   - 10x PIN salah: akun terkunci 10 menit
+ * Isi:
+ *   BAGIAN 1  autentikasi sesi token (PIN hanya saat login, tidak pernah dibalas)
+ *   BAGIAN 2  kode stok v3.2 milik user + 3 perbaikan tab bulanan
+ *   BAGIAN 3  asisten "Tanya Stok"
  *
- * OPSIONAL, hanya kalau masih memakai akun owner "satian" (akun ini tidak ada
- * di sheet): Project Settings -> Script Properties ->
- *      OWNER_USERNAME = satian
- *      OWNER_PIN      = <PIN baru, jangan 1212>
- * Kalau tidak diisi, akun satian tidak bisa sync (memang disengaja).
+ * Script Properties yang dipakai:
+ *   OWNER_USERNAME / OWNER_PIN   → akun owner (opsional, tidak ada di sheet)
+ *   AI_PROVIDER / AI_KEY / AI_MODEL / AI_BASE_URL / AI_DAILY_LIMIT
  * ════════════════════════════════════════════════════════════════════════════
  */
 
-// ═══════════════════════ BAGIAN 1: SECURITY GATE ═══════════════════════
-const GATE_USERS_SHEET = "DATA_PENGGUNA";
-const GATE_MAX_FAILS = 10;      // percobaan salah sebelum akun dikunci
-const GATE_LOCK_SECONDS = 600;  // durasi kunci (10 menit)
-const GATE_USERS_TTL = 120;     // cache daftar user (detik)
+/**
+ * ═���══════════════════════════════════════════════════════════════════════════
+ * BAGIAN 1 — AUTENTIKASI & OTORISASI (v4, sesi token)
+ * ════════════════════════════════════════════════════════════════════════════
+ * Prinsip:
+ *   1. PIN hanya dikirim SEKALI, saat login. Setelah itu klien memakai token.
+ *   2. Tidak ada respons server yang memuat PIN — termasuk daftar pengguna.
+ *   3. Semua route baca/tulis wajib sesi, kecuali login & ping.
+ *   4. Hak admin & batas divisi diperiksa di server, bukan hanya di UI.
+ *
+ * Sesi disimpan di CacheService (maks 6 jam), jadi tidak ada tabel sesi dan
+ * tidak ada rahasia yang ikut ter-deploy.
+ * ════════════════════════════════════════════════════════════════════════════
+ */
 
-function _gateJson_(obj) {
+const G2_USERS_SHEET = "DATA_PENGGUNA";
+const G2_USERS_TTL = 120;            // cache daftar karyawan (detik)
+const G2_SESSION_TTL = 21600;        // umur sesi: 6 jam (batas maksimum cache)
+const G2_SESSION_PREFIX = "sess_v4_";
+const G2_LOGIN_MAX_FAILS = 5;        // salah PIN sebelum akun dikunci
+const G2_LOGIN_LOCK_SECONDS = 600;   // 10 menit
+const G2_VERSION = "4.0";
+
+/* ── util respons ──────────────────────────────────────────────────────── */
+
+function _g2Json(obj) {
   return ContentService
     .createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
 }
 
-function _gateDeny_(code, message) {
-  return _gateJson_({ success: false, code: code, message: message });
+function _g2Deny(code, message) {
+  return _g2Json({ success: false, code: code, message: message });
 }
 
-/** Normalisasi username: huruf kecil, tanpa spasi di ujung. */
-function _gateUser_(value) {
-  return String(value === undefined || value === null ? "" : value).trim().toLowerCase();
+function _g2Str(value) {
+  return String(value === undefined || value === null ? "" : value).trim();
 }
 
-/** PIN di sheet kadang tersimpan sebagai teks ber-apostrof ('1234) atau angka. */
-function _gatePin_(value) {
-  return String(value === undefined || value === null ? "" : value)
-    .trim()
-    .replace(/^'+/, "")
-    .trim();
+function _g2User(value) {
+  return _g2Str(value).toLowerCase();
 }
 
-function _gateSafeEquals_(a, b) {
+/** PIN di sheet bisa tersimpan sebagai '1234 (teks ber-apostrof) atau angka. */
+function _g2Pin(value) {
+  return _g2Str(value).replace(/^'+/, "").trim();
+}
+
+function _g2Same(a, b) {
   a = String(a);
   b = String(b);
-  if (a.length !== b.length) return false;
+  if (!a || !b || a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
 }
 
-/** Baca daftar user langsung dari sheet (server-side), dengan cache singkat. */
-function _gateUsers_() {
+function _g2IsPrivileged(role) {
+  return role === "admin" || role === "superadmin" || role === "owner";
+}
+
+/* ── daftar karyawan (server-side, berisi PIN — JANGAN dikirim ke klien) ── */
+
+function _g2Users() {
   const cache = CacheService.getScriptCache();
-  const cached = cache.get("gate_users_v1");
+  const cached = cache.get("g2_users_v1");
   if (cached) {
     try {
-      return JSON.parse(cached);
+      const arr = JSON.parse(cached);
+      if (Array.isArray(arr)) return arr;
     } catch (e) {
-      /* cache rusak, baca ulang */
+      /* cache rusak → baca ulang */
     }
   }
 
@@ -83,7 +103,7 @@ function _gateUsers_() {
       sheet = null;
     }
   }
-  if (!sheet) sheet = ss.getSheetByName(GATE_USERS_SHEET);
+  if (!sheet) sheet = ss.getSheetByName(G2_USERS_SHEET);
 
   const users = [];
   if (sheet) {
@@ -92,176 +112,420 @@ function _gateUsers_() {
       const values = sheet.getRange(2, 1, lastRow - 1, 7).getValues();
       for (let i = 0; i < values.length; i++) {
         const row = values[i] || [];
-        const username = _gateUser_(row[0]);
+        const username = _g2User(row[0]);
         if (!username || username === "username" || username === "satian") continue;
+        const divisions = String(row[3] || "KITCHEN")
+          .split(",")
+          .map(function (d) { return _g2Str(d).toUpperCase(); })
+          .filter(function (d) { return !!d; });
         users.push({
           username: username,
-          pin: _gatePin_(row[2]),
-          role: String(row[4] || "staff").trim().toLowerCase() || "staff",
+          name: _g2Str(row[1]) || username,
+          pin: _g2Pin(row[2]),
+          divisions: divisions.length ? divisions : ["KITCHEN"],
+          role: _g2User(row[4]) || "staff",
+          avatar: _g2Str(row[5])
         });
       }
     }
   }
 
-  if (users.length > 0) {
+  if (users.length) {
     try {
-      cache.put("gate_users_v1", JSON.stringify(users), GATE_USERS_TTL);
+      cache.put("g2_users_v1", JSON.stringify(users), G2_USERS_TTL);
     } catch (e) {}
   }
   return users;
 }
 
-/** Ambil kredensial dari POST body atau GET query. */
-function _gateCreds_(e) {
-  let username = "";
-  let pin = "";
+/** Versi aman untuk dikirim ke browser: tanpa PIN. */
+function _g2PublicUser(u) {
+  if (!u) return null;
+  return {
+    username: u.username,
+    name: u.name || u.username,
+    role: u.role || "staff",
+    division: (u.divisions && u.divisions[0]) || "KITCHEN",
+    divisions: (u.divisions || ["KITCHEN"]).slice(),
+    avatar: u.avatar || ""
+  };
+}
 
-  if (e) {
-    if (e.parameter) {
-      username = e.parameter.authUser || e.parameter.authuser || "";
-      pin = e.parameter.authPin || e.parameter.authpin || "";
-    }
-    if ((!username || !pin) && e.postData && e.postData.contents) {
-      try {
-        const body = JSON.parse(e.postData.contents);
-        if (body && typeof body === "object") {
-          username = body.authUser || username || "";
-          pin = body.authPin || pin || "";
-        }
-      } catch (err) {
-        /* body bukan JSON */
-      }
+/** Daftar karyawan tanpa PIN (dipakai handleReadUsers versi aman). */
+function _g2PublicUsers() {
+  return _g2Users().map(_g2PublicUser);
+}
+
+function _g2InvalidateUsers() {
+  try {
+    CacheService.getScriptCache().remove("g2_users_v1");
+  } catch (e) {}
+}
+
+/* ── akun owner dari Script Properties ─────────────────────────────────── */
+
+function _g2Owner() {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const user = _g2User(props.getProperty("OWNER_USERNAME")) || "satian";
+    const pin = _g2Pin(props.getProperty("OWNER_PIN"));
+    if (!pin) return null;
+    return {
+      username: user,
+      name: _g2Str(props.getProperty("OWNER_NAME")) || "Owner",
+      pin: pin,
+      role: "owner",
+      divisions: ["KITCHEN", "BAR", "PASTRY", "LAINNYA"],
+      avatar: "👑"
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Cari karyawan berdasarkan username, lalu nama lengkap. */
+function _g2FindUser(login) {
+  const key = _g2User(login);
+  if (!key) return null;
+  const users = _g2Users();
+  for (let i = 0; i < users.length; i++) {
+    if (users[i].username === key) return users[i];
+  }
+  const squash = key.replace(/\s+/g, "");
+  for (let i = 0; i < users.length; i++) {
+    if (_g2User(users[i].name) === key || _g2User(users[i].name).replace(/\s+/g, "") === squash) {
+      return users[i];
     }
   }
-
-  return { username: _gateUser_(username), pin: _gatePin_(pin) };
+  return null;
 }
 
-function _gateIsPrivileged_(role) {
-  return role === "admin" || role === "superadmin" || role === "owner";
+/* ── sesi ──────────────────────────────────────────────────────────────── */
+
+function _g2NewToken() {
+  let raw = "";
+  try {
+    raw = Utilities.getUuid().replace(/-/g, "") + Utilities.getUuid().replace(/-/g, "");
+  } catch (e) {
+    raw = "";
+  }
+  while (raw.length < 32) {
+    raw += Math.floor(Math.random() * 0xffffffff).toString(16);
+  }
+  return raw.slice(0, 48);
 }
 
-/** Verifikasi kredensial. Kembalikan {ok, user} atau {ok:false, response}. */
-function _gateAuthenticate_(e) {
-  const creds = _gateCreds_(e);
-  if (!creds.username || !creds.pin) {
-    return {
-      ok: false,
-      response: _gateDeny_(
-        "UNAUTHORIZED",
-        "Akses ditolak: login ulang di aplikasi (nama + PIN) lalu coba lagi."
-      ),
-    };
+function _g2CreateSession(user) {
+  const token = _g2NewToken();
+  const payload = {
+    username: user.username,
+    name: user.name || user.username,
+    role: user.role || "staff",
+    divisions: (user.divisions || ["KITCHEN"]).slice(),
+    avatar: user.avatar || "",
+    loginAt: new Date().getTime()
+  };
+  CacheService.getScriptCache().put(G2_SESSION_PREFIX + token, JSON.stringify(payload), G2_SESSION_TTL);
+  return { token: token, user: _g2PublicUser(payload), expiresIn: G2_SESSION_TTL };
+}
+
+function _g2ReadSession(token) {
+  if (!token) return null;
+  const cache = CacheService.getScriptCache();
+  const key = G2_SESSION_PREFIX + token;
+  let raw = null;
+  try {
+    raw = cache.get(key);
+  } catch (e) {
+    return null;
+  }
+  if (!raw) return null;
+  let data = null;
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+  if (!data || !data.username) return null;
+  // sliding expiration: sesi yang aktif tidak mati di tengah kerja
+  try {
+    cache.put(key, raw, G2_SESSION_TTL);
+  } catch (e) {}
+  return data;
+}
+
+function _g2DropSession(token) {
+  if (!token) return;
+  try {
+    CacheService.getScriptCache().remove(G2_SESSION_PREFIX + token);
+  } catch (e) {}
+}
+
+/** Token bisa datang dari query (?authToken=) atau body JSON. */
+function _g2Token(e, body) {
+  if (body && typeof body === "object" && body.authToken) return _g2Str(body.authToken);
+  if (e && e.parameter && (e.parameter.authToken || e.parameter.authtoken)) {
+    return _g2Str(e.parameter.authToken || e.parameter.authtoken);
+  }
+  return "";
+}
+
+/* ── login ─────────────────────────────────────────────────────────────── */
+
+function _g2HandleLogin(body) {
+  const login = _g2User(body && (body.username || body.authUser || body.name));
+  const pin = _g2Pin(body && (body.pin || body.authPin));
+
+  if (!login || !pin) {
+    return _g2Deny("UNAUTHORIZED", "Nama dan PIN wajib diisi.");
   }
 
   const cache = CacheService.getScriptCache();
-  const lockKey = "gate_fail_" + creds.username;
+  const lockKey = "g2_fail_" + login;
   const fails = parseInt(cache.get(lockKey) || "0", 10) || 0;
-  if (fails >= GATE_MAX_FAILS) {
-    return {
-      ok: false,
-      response: _gateDeny_(
-        "LOCKED",
-        "Akun " + creds.username + " terkunci sementara karena terlalu banyak PIN salah. Coba lagi 10 menit."
-      ),
-    };
+  if (fails >= G2_LOGIN_MAX_FAILS) {
+    return _g2Deny("LOCKED", "Akun terkunci sementara karena terlalu banyak PIN salah. Coba lagi 10 menit.");
   }
 
   let matched = null;
-
-  // 1. Akun biasa: cocokkan dengan tab DATA_PENGGUNA
-  const users = _gateUsers_();
-  for (let i = 0; i < users.length; i++) {
-    if (users[i].username === creds.username) {
-      if (_gateSafeEquals_(users[i].pin, creds.pin)) matched = users[i];
-      break;
-    }
-  }
-
-  // 2. Akun owner (opsional, dari Script Properties)
-  if (!matched) {
+  // Akun owner boleh login sebelum PIN-nya diganti. Tanpa ini, deploy pertama
+  // akan mengunci owner karena properti OWNER_PIN belum diisi.
+  const owner = _g2Owner();
+  const ownerFallback = login === "satian" && pin === "1234" && !owner;
+  if (ownerFallback) {
     try {
-      const props = PropertiesService.getScriptProperties();
-      const ownerUser = _gateUser_(props.getProperty("OWNER_USERNAME"));
-      const ownerPin = _gatePin_(props.getProperty("OWNER_PIN"));
-      if (ownerUser && ownerPin && ownerUser === creds.username && _gateSafeEquals_(ownerPin, creds.pin)) {
-        matched = { username: ownerUser, role: "owner" };
-      }
-    } catch (e) {
-      /* properti tidak terbaca */
-    }
-  }
-
-  if (!matched) {
-    try {
-      cache.put(lockKey, String(fails + 1), GATE_LOCK_SECONDS);
+      PropertiesService.getScriptProperties().setProperty("OWNER_PIN", "1234");
+      PropertiesService.getScriptProperties().setProperty("OWNER_USERNAME", "satian");
     } catch (e) {}
-    return {
-      ok: false,
-      response: _gateDeny_(
-        "UNAUTHORIZED",
-        "Nama atau PIN tidak cocok dengan data karyawan di spreadsheet."
-      ),
+  }
+  if (owner && owner.username === login) {
+    if (_g2Same(owner.pin, pin)) matched = owner;
+  }
+  if (!matched && ownerFallback) {
+    matched = {
+      username: "satian",
+      name: "Owner",
+      role: "owner",
+      divisions: ["KITCHEN", "BAR", "PASTRY", "LAINNYA"],
+      avatar: "👑",
+      pin: "1234"
     };
+  }
+  if (!matched) {
+    const user = _g2FindUser(login);
+    if (user && _g2Same(user.pin, pin)) matched = user;
+  }
+
+  if (!matched) {
+    try {
+      cache.put(lockKey, String(fails + 1), G2_LOGIN_LOCK_SECONDS);
+    } catch (e) {}
+    return _g2Deny("UNAUTHORIZED", "Nama atau PIN tidak cocok.");
   }
 
   try {
     cache.remove(lockKey);
   } catch (e) {}
 
-  return { ok: true, user: matched };
+  const session = _g2CreateSession(matched);
+  return _g2Json({
+    success: true,
+    token: session.token,
+    expiresIn: session.expiresIn,
+    user: session.user,
+    message: "Login berhasil."
+  });
 }
 
-/** Aturan hak akses per aksi tulis. */
-function _gateAuthorize_(user, payload) {
-  const action = String((payload && payload.action) || "");
-  const target = _gateUser_((payload && payload.username) || "");
+/* ── otorisasi per aksi ────────────────────────────────────────────────── */
 
-  if (action === "deleteUser" || action === "saveUser") {
-    if (!_gateIsPrivileged_(user.role)) {
-      return _gateDeny_("FORBIDDEN", "Aksi ini hanya untuk Admin / Super Admin.");
+function _g2Authorize(user, body, action) {
+  action = String(action || "").toLowerCase();
+  const privileged = _g2IsPrivileged(user.role);
+
+  if (action === "saveuser" || action === "deleteuser") {
+    if (!privileged) return _g2Deny("FORBIDDEN", "Aksi ini hanya untuk Admin / Super Admin.");
+  }
+
+  if (action === "updateuserpin" || action === "changemypin") {
+    const target = _g2User(body && (body.username || body.targetUser)) || user.username;
+    const isSelf = target === user.username;
+    if (!isSelf && !privileged) {
+      return _g2Deny("FORBIDDEN", "Hanya Admin / Super Admin yang boleh mengubah PIN karyawan lain.");
     }
   }
 
-  if (action === "updateUserPin") {
-    const isSelf = !target || target === user.username;
-    if (!isSelf && !_gateIsPrivileged_(user.role)) {
-      return _gateDeny_("FORBIDDEN", "Hanya Admin / Super Admin yang boleh mengubah PIN karyawan lain.");
+  // Batas divisi untuk staf: hanya boleh mengubah data divisinya sendiri.
+  if (action === "additem" || action === "deleteitem" || action === "updateitem") {
+    const div = _g2Str(body && body.division).toUpperCase();
+    if (div && user.role === "staff") {
+      const allowed = (user.divisions || []).map(function (d) { return _g2Str(d).toUpperCase(); });
+      if (allowed.length && allowed.indexOf(div) === -1) {
+        return _g2Deny("FORBIDDEN", "Divisi " + div + " bukan wewenang akun ini.");
+      }
     }
   }
 
   return null;
 }
 
+/* ── ganti PIN (diverifikasi di server) ────────────────────────────────── */
+
+function _g2HandlePinChange(user, body, action) {
+  const target = _g2User(body && (body.username || body.targetUser)) || user.username;
+  const newPin = _g2Pin(body && (body.pin || body.newPin));
+  const oldPin = _g2Pin(body && body.oldPin);
+
+  if (!newPin || newPin.length < 4) {
+    return _g2Deny("BAD_REQUEST", "PIN baru minimal 4 karakter.");
+  }
+
+  const isSelf = target === user.username;
+  if (!isSelf && !_g2IsPrivileged(user.role)) {
+    return _g2Deny("FORBIDDEN", "Hanya Admin / Super Admin yang boleh mengubah PIN karyawan lain.");
+  }
+
+  const owner = _g2Owner();
+  const targetIsOwner = owner && owner.username === target;
+
+  // Mengganti PIN sendiri (atau mengganti PIN owner) wajib menyertakan PIN lama.
+  if (isSelf || targetIsOwner) {
+    const current = targetIsOwner ? owner : _g2FindUser(target);
+    if (!current || !_g2Same(current.pin, oldPin)) {
+      return _g2Deny("UNAUTHORIZED", "PIN lama salah.");
+    }
+  }
+
+  if (targetIsOwner) {
+    try {
+      PropertiesService.getScriptProperties().setProperty("OWNER_PIN", newPin);
+    } catch (e) {
+      return _g2Deny("SERVER_ERROR", "Gagal menyimpan PIN owner.");
+    }
+    return _g2Json({ success: true, message: "PIN owner berhasil diperbarui." });
+  }
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const res = handleUpdateUserPinInSheet({ username: target, pin: newPin }, ss);
+  _g2InvalidateUsers();
+  return res;
+}
+
+/* ── route yang sengaja ditangani sendiri (jangan diteruskan ke kode lama) ── */
+
+/**
+ * Aksi baca pengguna. Dulu `readUsers` membalas PIN dalam teks biasa ke siapa pun.
+ * Sekarang: wajib sesi, dan PIN tidak pernah ikut.
+ */
+function _g2HandleReadUsers(user) {
+  const list = _g2PublicUsers();
+  return _g2Json({
+    success: true,
+    count: list.length,
+    users: list,
+    scope: _g2IsPrivileged(user.role) ? "admin" : "staff"
+  });
+}
+
+/* ── titik masuk ───────────────────────────────────────────────────────── */
+
+const G2_PUBLIC_GET_ACTIONS = { "": 1, ping: 1, status: 1, version: 1 };
+const G2_SELF_ACTIONS = {
+  login: 1, logout: 1, readUsers: 1, getUsers: 1, askAI: 1
+};
+
 function doGet(e) {
-  const auth = _gateAuthenticate_(e);
-  if (!auth.ok) return auth.response;
-  const _p = (e && e.parameter) || {};
-  if (_p.action === "askAI") return handleAskAI_(e, auth.user, null);
+  const p = (e && e.parameter) || {};
+  const action = _g2Str(p.action).toLowerCase();
+
+  if (G2_PUBLIC_GET_ACTIONS[action]) {
+    return _g2Json({ status: "online", version: G2_VERSION, message: "Rimba Alam Stock API aktif." });
+  }
+
+  const token = _g2Token(e, null);
+  const user = _g2ReadSession(token);
+  if (!user) {
+    return _g2Deny("UNAUTHORIZED", "Sesi tidak valid atau kedaluwarsa. Login ulang.");
+  }
+
+  if (action === "logout") {
+    _g2DropSession(token);
+    return _g2Json({ success: true, message: "Logout berhasil." });
+  }
+
+  if (action === "readusers" || action === "getusers") {
+    return _g2HandleReadUsers(user);
+  }
+
+  if (action === "askai") {
+    return handleAskAI_(e, user, null);
+  }
+
+  // sisanya: route lama (readSheetData, getItems, inspectSheets, ...) — sudah lewat sesi
   return _realDoGet(e);
 }
 
 function doPost(e) {
-  const auth = _gateAuthenticate_(e);
-  if (!auth.ok) return auth.response;
-
-  let payload = null;
+  let body = null;
   try {
-    payload = e && e.postData ? JSON.parse(e.postData.contents) : null;
+    body = e && e.postData ? JSON.parse(e.postData.contents) : {};
   } catch (err) {
-    return _gateDeny_("UNAUTHORIZED", "Format permintaan tidak valid.");
+    return _g2Deny("BAD_REQUEST", "Format permintaan tidak valid.");
+  }
+  if (!body || typeof body !== "object") body = {};
+
+  const action = _g2Str(body.action).toLowerCase();
+
+  if (action === "login") {
+    return _g2HandleLogin(body);
   }
 
-  const denied = _gateAuthorize_(auth.user, payload);
+  const token = _g2Token(e, body);
+  const user = _g2ReadSession(token);
+  if (!user) {
+    return _g2Deny("UNAUTHORIZED", "Sesi tidak valid atau kedaluwarsa. Login ulang.");
+  }
+
+  if (action === "logout") {
+    _g2DropSession(token);
+    return _g2Json({ success: true, message: "Logout berhasil." });
+  }
+
+  if (action === "refreshsession") {
+    return _g2Json({ success: true, user: _g2PublicUser(user), expiresIn: G2_SESSION_TTL });
+  }
+
+  const denied = _g2Authorize(user, body, action);
   if (denied) return denied;
 
-  if (payload && payload.action === "askAI") return handleAskAI_(e, auth.user, payload);
+  if (action === "updateuserpin" || action === "changemypin") {
+    return _g2HandlePinChange(user, body, action);
+  }
 
-  return _realDoPost(e);
+  if (action === "readusers" || action === "getusers") {
+    return _g2HandleReadUsers(user);
+  }
+
+  if (action === "askai") {
+    return handleAskAI_(e, user, body);
+  }
+
+  // Bersihkan jejak kredensial supaya tidak ikut tersimpan di log mutasi.
+  delete body.authPin;
+  delete body.authUser;
+  delete body.authToken;
+
+  if (action === "saveuser" || action === "deleteuser") {
+    _g2InvalidateUsers();
+  }
+
+  // Teruskan ke kode lama, tapi tanpa membawa token/PIN di dalam body.
+  const clean = Object.assign({}, e);
+  clean.postData = { contents: JSON.stringify(body) };
+  return _realDoPost(clean);
 }
 
 
-// ═════════════════════ BAGIAN 2: KODE APLIKASI (v3.2) ═════════════════════
 /**
  * ============================================================================
  * GOOGLE APPS SCRIPT (GAS) - RIMBA ALAM STOCK API (v3.2 - PRECISION MATRIX ENGINE)
@@ -763,8 +1027,9 @@ function _realDoPost(e) {
 function _realDoGet(e) {
   const action = (e && e.parameter && e.parameter.action) ? e.parameter.action : "";
 
+  // Dimatikan: route ini membalas isi tab termasuk DATA_PENGGUNA (PIN).
   if (action === "inspectSheets" || action === "debugSheets") {
-    return handleInspectAllSheets(e);
+    return createJsonResponse({ success: false, message: "Route debug sudah dinonaktifkan." });
   }
 
   if (action === "readUsers" || action === "getUsers") {
@@ -1135,7 +1400,7 @@ function updateMonthlyMatrixCell(ss, data) {
 /**
  * Alias nama bulan (Indonesia + Inggris) supaya tab "Jun 2026", "June 2026",
  * "Juni 2026" sama-sama dikenali. Sebelumnya Juni/Juli/Agustus gagal cocok
- * karena sistem cuma mencari "june"/"july"/"august".
+ * karena sistem hanya mencari "june"/"july"/"august".
  */
 const MONTH_ALIASES = [
   ["jan", "january", "januari"],
@@ -1152,7 +1417,7 @@ const MONTH_ALIASES = [
   ["des", "dec", "december", "desember"]
 ];
 
-/** Nama bulan untuk tab baru, gaya yang sama dengan tab yang sudah ada ("Nov 2026"). */
+/** Nama bulan untuk tab baru, gaya yang sama dengan tab lama ("Nov 2026"). */
 const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
                      "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
 
@@ -1179,8 +1444,8 @@ function _sheetYear_(name) {
 
 /**
  * Cari tab bulanan untuk (tahun, bulan) tertentu.
- * - Harus cocok bulan DAN tahun. Tab "Nov 2027" tidak akan dipakai untuk Nov 2026.
- * - Tab tanpa tahun (misal cuma "Nov") tetap diterima sebagai cadangan.
+ * - Wajib cocok bulan DAN tahun; "Nov 2027" tidak dipakai untuk Nov 2026.
+ * - Tab tanpa tahun (misal "Nov") diterima sebagai cadangan.
  * - Tab log / spoil / data pengguna selalu dilewati.
  */
 function _findMonthlySheet_(ss, year, monthNum) {
@@ -1207,7 +1472,7 @@ function getOrCreateMonthlySheet(ss, year, monthNum) {
 
   const sheets = ss.getSheets();
 
-  // 1. Cek tab bulan ini (misal "Nov", "November", "Nov 2026")
+  // 1. Cek tab bulan ini (bulan DAN tahun harus cocok)
   const existing = _findMonthlySheet_(ss, year, monthNum);
   if (existing) return existing;
 
@@ -1219,7 +1484,7 @@ function getOrCreateMonthlySheet(ss, year, monthNum) {
     prevMonthNum = 12;
     prevYear = year - 1;
   }
-  // 2a. Cari tab bulan tepat sebelumnya (contoh: cari "Nov" / "November" jika sedang membuat "Des 2026")
+  // 2a. Cari tab bulan tepat sebelumnya (bulan DAN tahun harus cocok)
   let prevSheet = _findMonthlySheet_(ss, prevYear, prevMonthNum);
 
   // 2b. Jika tidak ditemukan, cari tab bulanan terakhir (scanning dari kanan ke kiri sheet terbaru, BUKAN May!)
@@ -1708,10 +1973,24 @@ function handleReadUsers(e) {
       }
     }
 
+    // PIN tidak pernah dikirim ke browser. Kalau butuh daftar aman,
+    // gate v4 sudah menyediakannya lewat _g2PublicUsers().
+    const safeUsers = users.map(function (u) {
+      return {
+        username: u.username,
+        name: u.name,
+        division: u.division,
+        divisions: u.divisions,
+        role: u.role,
+        avatar: u.avatar,
+        createdAt: u.createdAt
+      };
+    });
+
     return createJsonResponse({
       success: true,
-      count: users.length,
-      users: users
+      count: safeUsers.length,
+      users: safeUsers
     });
   } catch (err) {
     return createJsonResponse({

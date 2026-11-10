@@ -10940,16 +10940,19 @@ const DataService = (() => {
     return DEFAULT_GAS_URL;
   }
 
-  function readDeviceCred() {
+  /**
+   * Token sesi untuk shim fetch. PIN tidak pernah disimpan di perangkat.
+   * Token diterbitkan server saat login dan mati saat logout / kedaluwarsa.
+   */
+  function readSessionToken() {
     try {
-      if (typeof window === "undefined" || !window.sessionStorage) return null;
-      const raw = window.sessionStorage.getItem("rimba_alam_device_cred_v1");
-      if (!raw) return null;
-      const c = JSON.parse(raw);
-      if (!c || !c.u || !c.p) return null;
-      return { u: String(c.u), p: String(c.p) };
+      if (typeof window === "undefined" || !window.sessionStorage) return "";
+      const raw = window.sessionStorage.getItem("rimba_alam_session");
+      if (!raw) return "";
+      const sess = JSON.parse(raw);
+      return sess && sess.token ? String(sess.token) : "";
     } catch (e) {
-      return null;
+      return "";
     }
   }
 
@@ -10962,7 +10965,7 @@ const DataService = (() => {
       try {
         const url = typeof input === "string" ? input : (input && input.url) || "";
         if (url.indexOf("script.google.com") !== -1) {
-          const cred = readDeviceCred();
+          const token = readSessionToken();
           const method = ((init && init.method) || (input && input.method) || "GET").toUpperCase();
 
           if (method === "POST") {
@@ -10970,23 +10973,21 @@ const DataService = (() => {
             if (typeof init.body === "string") {
               try {
                 const obj = JSON.parse(init.body);
-                // authUser/authPin TIDAK menimpa username/pin milik payload
-                // (payload "updateUserPin" memakai dua field itu untuk target lain).
-                if (cred) {
-                  obj.authUser = cred.u;
-                  obj.authPin = cred.p;
+                // Token sesi, bukan PIN. Payload "username/pin" milik aksi
+                // (mis. ganti PIN karyawan lain) tidak pernah ditimpa.
+                if (token) {
+                  obj.authToken = token;
                 }
                 init = Object.assign({}, init, { body: JSON.stringify(obj) });
               } catch (e) {
                 /* body bukan JSON, biarkan apa adanya */
               }
             }
-          } else if (cred) {
+          } else if (token) {
             const sep = url.indexOf("?") === -1 ? "?" : "&";
             const extra = [];
-            if (cred && url.indexOf("authUser=") === -1) {
-              extra.push("authUser=" + encodeURIComponent(cred.u));
-              extra.push("authPin=" + encodeURIComponent(cred.p));
+            if (url.indexOf("authToken=") === -1) {
+              extra.push("authToken=" + encodeURIComponent(token));
             }
             if (extra.length) input = url + sep + extra.join("&");
           }
@@ -11475,7 +11476,7 @@ if (typeof window !== "undefined") {
  * Sistem Autentikasi 3 Tingkat Role dengan Keamanan PIN & Database Spreadsheet:
  * 1. Super Admin (Satian): Super Admin Utama / Owner.
  *    - Akun 'satian' BERSIFAT RAHASIA: TIDAK ADA di Google Sheets, TIDAK ADA di list app!
- *    - PIN khusus: 1212.
+ *    - PIN dikelola di Script Properties server (tidak ada di file ini).
  *    - Akses penuh: Kelola User, Integrasi Spreadsheet, Reset Data, dll.
  * 2. Admin Operasional (Admin, Ragil, Angel):
  *    - Bisa input stok, tambah barang baru, edit harga/stok, melihat nilai uang (Rp).
@@ -11507,7 +11508,6 @@ const AuthService = (() => {
       role: "admin",
       division: "ADMIN",
       divisions: ["KITCHEN", "BAR", "PASTRY", "LAINNYA"],
-      pin: "1234",
       avatar: "👨‍💼",
       createdAt: "2026-01-01"
     },
@@ -11517,7 +11517,6 @@ const AuthService = (() => {
       role: "admin",
       division: "ADMIN",
       divisions: ["KITCHEN", "BAR", "PASTRY", "LAINNYA"],
-      pin: "1234",
       avatar: "👩‍💼",
       createdAt: "2026-01-01"
     },
@@ -11527,7 +11526,6 @@ const AuthService = (() => {
       role: "staff",
       division: "KITCHEN",
       divisions: ["KITCHEN", "LAINNYA"],
-      pin: "1234",
       avatar: "🍳",
       createdAt: "2026-01-01"
     },
@@ -11537,7 +11535,6 @@ const AuthService = (() => {
       role: "staff",
       division: "KITCHEN",
       divisions: ["KITCHEN", "LAINNYA"],
-      pin: "1234",
       avatar: "🍳",
       createdAt: "2026-01-01"
     },
@@ -11547,7 +11544,6 @@ const AuthService = (() => {
       role: "staff",
       division: "BAR",
       divisions: ["BAR", "LAINNYA"],
-      pin: "1234",
       avatar: "☕",
       createdAt: "2026-01-01"
     },
@@ -11557,7 +11553,6 @@ const AuthService = (() => {
       role: "staff",
       division: "PASTRY",
       divisions: ["PASTRY", "LAINNYA"],
-      pin: "1234",
       avatar: "🍰",
       createdAt: "2026-01-01"
     },
@@ -11567,7 +11562,6 @@ const AuthService = (() => {
       role: "staff",
       division: "LAINNYA",
       divisions: ["LAINNYA"],
-      pin: "1234",
       avatar: "📦",
       createdAt: "2026-01-01"
     }
@@ -11605,6 +11599,25 @@ const AuthService = (() => {
     }
   }
 
+  /** Kirim satu aksi ke server dan kembalikan JSON-nya (untuk aksi yang butuh jawaban). */
+  async function _postGasJson(payload) {
+    const url = _getGasUrl();
+    if (!url) return { success: false, message: "URL server belum diatur." };
+    const body = Object.assign({}, payload);
+    const sess = _getSession();
+    if (sess && sess.token && !body.authToken) body.authToken = sess.token;
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify(body)
+      });
+      return await res.json();
+    } catch (err) {
+      return { success: false, message: "Gagal menghubungi server." };
+    }
+  }
+
   /** Muat daftar user dari localStorage atau fallback in-memory */
   function _loadUsers() {
     try {
@@ -11638,7 +11651,12 @@ const AuthService = (() => {
 
   /** Simpan daftar user ke localStorage & in-memory */
   function _saveUsers(users) {
-    const cleaned = { ...users };
+    const cleaned = {};
+    Object.keys(users || {}).forEach(function (k) {
+      const u = Object.assign({}, users[k]);
+      delete u.pin;                 // PIN hanya hidup di server
+      cleaned[k] = u;
+    });
     delete cleaned.satian;
     delete cleaned.admin;
     _inMemoryUsers = cleaned;
@@ -11658,18 +11676,10 @@ const AuthService = (() => {
   }
 
   /** Simpan sesi aktif */
-  /** Simpan kredensial perangkat (dipakai shim fetch untuk autentikasi ke GAS). */
-  function _saveDeviceCred(username, pin) {
-    try {
-      if (typeof window !== "undefined" && window.sessionStorage) {
-        const u = String(username || "").trim();
-        const p = String(pin || "").trim();
-        if (!u || !p) return;
-        window.sessionStorage.setItem(DEVICE_CRED_KEY, JSON.stringify({ u: u, p: p }));
-      }
-    } catch (e) {
-      console.warn("[AuthService] Gagal menyimpan kredensial perangkat:", e);
-    }
+  /** Penanda kompatibilitas: kredensial perangkat tidak lagi dipakai (token ada di sesi). */
+  function _saveDeviceCred(username) {
+    // Sengaja tidak menyimpan apa pun: PIN tidak boleh menetap di perangkat.
+    // Autentikasi memakai token sesi yang sudah ada di _saveSession().
   }
 
   /** Hapus kredensial perangkat (dipanggil saat logout). */
@@ -11735,110 +11745,56 @@ const AuthService = (() => {
    * @param {string} rawUsername - Nama karyawan (bebas huruf besar/kecil)
    * @param {string} inputPin - PIN yang dimasukkan
    */
-  function login(rawUsername, inputPin) {
-    if (!rawUsername || !rawUsername.trim()) {
+  async function login(rawUsername, inputPin) {
+    const username = (rawUsername || "").trim();
+    const pin = (inputPin || "").trim();
+
+    if (!username) {
       return { success: false, message: "Silakan masukkan nama atau ID akun Anda." };
     }
-
-    const cleanInput = rawUsername.trim().toLowerCase();
-    const noSpace = cleanInput.replace(/\s+/g, "");
-    const cleanPin = (inputPin || "").trim();
-
-    // ── KHUSUS AKUN SATIAN (SUPER ADMIN / OWNER RAHASIA) ──
-    // Akun ini TIDAK ADA di spreadsheet dan TIDAK ADA di list app!
-    // PIN Khusus: 1212.
-    if (cleanInput === "satian" || cleanInput === "owner") {
-      if (cleanPin === "1212") {
-        delete _failedAttempts["satian"];
-        const session = {
-          username: "satian",
-          name: "Satian",
-          role: "superadmin",
-          division: "SUPERADMIN",
-          divisions: ["KITCHEN", "BAR", "PASTRY", "LAINNYA"],
-          avatar: "👑",
-          loginAt: new Date().toISOString()
-        };
-        _saveSession(session);
-        _saveDeviceCred("satian", cleanPin);
-        return {
-          success: true,
-          message: "Selamat datang, Satian (Super Admin)!",
-          user: session
-        };
-      } else {
-        return {
-          success: false,
-          message: "PIN salah untuk Satian."
-        };
-      }
+    if (!pin) {
+      return { success: false, message: "PIN wajib diisi." };
     }
 
-    const users = _loadUsers();
+    const url = _getGasUrl();
+    if (!url) {
+      return { success: false, message: "URL server belum diatur. Buka Pengaturan." };
+    }
 
-    // 1. Cek pencocokan username langsung atau no-space
-    let userKey = Object.keys(users).find(k => k.toLowerCase() === cleanInput || k.toLowerCase() === noSpace);
-
-    // 2. Cek pencocokan dengan nama lengkap karyawan (exact match)
-    if (!userKey) {
-      userKey = Object.keys(users).find(k => {
-        const u = users[k];
-        return (u.name && u.name.toLowerCase() === cleanInput) ||
-               (u.username && u.username.toLowerCase() === cleanInput);
+    let data;
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ action: "login", username: username, pin: pin })
       });
+      data = await res.json();
+    } catch (err) {
+      return { success: false, message: "Gagal menghubungi server. Periksa koneksi lalu coba lagi." };
     }
 
-    // 3. Cek pencocokan alias resmi karyawan jika belum ketemu
-    if (!userKey) {
-      if (cleanInput.includes("ragil") && users["ragil"]) {
-        userKey = "ragil";
-      } else if (cleanInput.includes("angel") && users["angel"]) {
-        userKey = "angel";
-      } else if (cleanInput.includes("rey") && users["rey"]) {
-        userKey = "rey";
-      } else if (cleanInput.includes("rina") && users["chef"]) {
-        userKey = "chef";
-      } else if (cleanInput.includes("doni") && users["barista"]) {
-        userKey = "barista";
-      } else if (cleanInput.includes("budi") && users["gudang"]) {
-        userKey = "gudang";
-      }
+    if (!data || !data.success || !data.token) {
+      return { success: false, message: (data && data.message) || "Login ditolak server." };
     }
 
-    // WAJIB: Jika user tidak ditemukan, tolak login!
-    if (!userKey || !users[userKey]) {
-      return {
-        success: false,
-        message: `Karyawan "${rawUsername.trim()}" tidak terdaftar. Silakan periksa kembali nama atau ID Anda.`
-      };
-    }
-
-    const matchedUser = users[userKey];
-
-    // Verifikasi PIN
-    const correctPin = String(matchedUser.pin || "1234").trim();
-    if (cleanPin !== correctPin) {
-      return {
-        success: false,
-        message: `PIN salah untuk ${matchedUser.name}. Silakan masukkan PIN yang benar.`
-      };
-    }
-
-    delete _failedAttempts[userKey];
-    const displayName = matchedUser.name ? _capitalize(matchedUser.name) : _capitalize(userKey);
+    const u = data.user || {};
+    const divisions = Array.isArray(u.divisions) && u.divisions.length
+      ? u.divisions
+      : [u.division || "KITCHEN"];
 
     const session = {
-      username: matchedUser.username,
-      name: displayName,
-      role: matchedUser.role,
-      division: matchedUser.division || (matchedUser.role === "admin" ? "ADMIN" : "KITCHEN"),
-      divisions: matchedUser.divisions || (matchedUser.role === "admin" ? ["KITCHEN", "BAR", "PASTRY", "LAINNYA"] : [matchedUser.division || "KITCHEN"]),
-      avatar: matchedUser.avatar || (matchedUser.role === "superadmin" ? "👑" : matchedUser.role === "admin" ? "👨‍💼" : "🧑‍🍳"),
+      username: u.username,
+      name: _capitalize(u.name || u.username || ""),
+      role: u.role || "staff",
+      division: u.division || divisions[0] || "KITCHEN",
+      divisions: divisions,
+      avatar: u.avatar || "",
+      token: data.token,
       loginAt: new Date().toISOString()
     };
 
     _saveSession(session);
-    _saveDeviceCred(session.username, cleanPin);
+    _saveDeviceCred(session.username, null);   // PIN tidak disimpan; token sudah di sesi
 
     return {
       success: true,
@@ -11849,6 +11805,17 @@ const AuthService = (() => {
 
   /** Logout */
   function logout() {
+    const sess = _getSession();
+    const url = _getGasUrl();
+    if (sess && sess.token && url) {
+      try {
+        fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify({ action: "logout", authToken: sess.token })
+        }).catch(function () {});
+      } catch (e) {}
+    }
     _clearSession();
     _clearDeviceCred();
   }
@@ -11985,90 +11952,54 @@ const AuthService = (() => {
   /**
    * Karyawan mengubah PIN sendiri
    */
-  function changeMyPin(oldPin, newPin) {
+  async function changeMyPin(oldPin, newPin) {
     const session = _getSession();
     if (!session) {
       return { success: false, message: "Silakan login terlebih dahulu." };
     }
-
-    if (session.username === "satian") {
-      return { success: false, message: "PIN akun Satian dilindungi permanen oleh sistem (1212)." };
-    }
-
     if (!oldPin || !oldPin.trim()) {
       return { success: false, message: "PIN lama wajib diisi!" };
     }
-
     if (!newPin || newPin.trim().length < 4) {
       return { success: false, message: "PIN baru minimal 4 angka/karakter." };
     }
 
-    const users = _loadUsers();
-    const user = users[session.username];
-    if (!user) {
-      return { success: false, message: "User tidak ditemukan di sistem." };
-    }
-
-    const currentPin = user.pin || "1234";
-    if (oldPin.trim() !== currentPin) {
-      return { success: false, message: "PIN lama yang Anda masukkan salah!" };
-    }
-
-    user.pin = newPin.trim();
-    _saveUsers(users);
-    _saveDeviceCred(session.username, newPin.trim());
-
-    _syncUserToSheet({
+    const data = await _postGasJson({
       action: "updateUserPin",
       username: session.username,
+      oldPin: oldPin.trim(),
       pin: newPin.trim()
     });
 
-    return {
-      success: true,
-      message: "PIN Anda berhasil diperbarui! Gunakan PIN baru ini untuk login berikutnya."
-    };
+    if (data && data.success) {
+      return { success: true, message: "PIN Anda berhasil diperbarui. Gunakan PIN baru untuk login berikutnya." };
+    }
+    return { success: false, message: (data && data.message) || "Pin gagal diperbarui." };
   }
 
   /**
    * Super Admin & Admin: Ubah/Reset PIN Karyawan Manapun
    */
-  function setEmployeePin(targetUsername, newPin) {
+  async function setEmployeePin(targetUsername, newPin) {
     if (!canManageUsers()) {
       return { success: false, message: "Akses ditolak: Hanya Admin / Super Admin yang dapat mengatur PIN karyawan lain." };
     }
-
-    if (targetUsername === "satian") {
-      return { success: false, message: "PIN akun Satian dilindungi permanen oleh sistem (1212)." };
-    }
-
     if (!newPin || newPin.trim().length < 4) {
       return { success: false, message: "PIN minimal 4 angka/karakter." };
     }
 
-    const users = _loadUsers();
-    const user = users[targetUsername];
-    if (!user) {
-      return { success: false, message: "Karyawan tidak ditemukan." };
-    }
-
-    user.pin = newPin.trim();
-    _saveUsers(users);
-    const _sess = _getSession();
-    if (_sess && _sess.username === targetUsername) {
-      _saveDeviceCred(targetUsername, newPin.trim());
-    }
-
-    _syncUserToSheet({
+    const data = await _postGasJson({
       action: "updateUserPin",
       username: targetUsername,
       pin: newPin.trim()
     });
 
-    return {
-      success: true,
-      message: `PIN untuk karyawan "${user.name}" berhasil diubah menjadi: ${newPin.trim()}`
-    };
+    if (data && data.success) {
+      const users = _loadUsers();
+      const nm = (users[targetUsername] && users[targetUsername].name) || targetUsername;
+      return { success: true, message: `PIN untuk "${nm}" berhasil diubah.` };
+    }
+    return { success: false, message: (data && data.message) || "PIN gagal diubah." };
   }
 
   /**
@@ -12119,7 +12050,6 @@ const AuthService = (() => {
       role: role,
       division: primaryDiv,
       divisions: divisions,
-      pin: cleanPin,
       avatar: avatar,
       createdAt: new Date().toISOString().split("T")[0]
     };
@@ -12130,16 +12060,18 @@ const AuthService = (() => {
       action: "saveUser",
       username: username,
       name: users[username].name,
-      pin: cleanPin,
       divisions: divisions,
       role: role,
       avatar: avatar,
       createdAt: users[username].createdAt
     });
 
+    // PIN hanya dikirim ke server, tidak pernah disimpan di perangkat.
+    _postGasJson({ action: "updateUserPin", username: username, pin: cleanPin });
+
     return {
       success: true,
-      message: `Karyawan "${_capitalize(trimmedName)}" berhasil didaftarkan (Izin Akses: ${divisions.join(", ")}, PIN: ${cleanPin}).`
+      message: `Karyawan "${_capitalize(trimmedName)}" berhasil didaftarkan (Izin Akses: ${divisions.join(", ")}).`
     };
   }
 
@@ -12217,7 +12149,6 @@ const AuthService = (() => {
       action: "saveUser",
       username: username,
       name: users[username].name,
-      pin: users[username].pin,
       divisions: divs,
       role: role,
       avatar: avatar,
@@ -12254,13 +12185,13 @@ const AuthService = (() => {
       user.name = _capitalize(updates.name.trim());
     }
 
-    // Reset PIN (jika diisi)
+    // Reset PIN (jika diisi) — dikirim ke server, tidak disimpan di perangkat
+    let pinReset = "";
     if (updates.pin && updates.pin.trim()) {
-      const cleanPin = updates.pin.trim();
-      if (cleanPin.length < 4) {
+      pinReset = updates.pin.trim();
+      if (pinReset.length < 4) {
         return { success: false, message: "PIN minimal 4 angka." };
       }
-      user.pin = cleanPin;
     }
 
     // Ubah kategori divisi (selain satian)
@@ -12289,11 +12220,14 @@ const AuthService = (() => {
 
     _saveUsers(users);
 
+    if (pinReset) {
+      _postGasJson({ action: "updateUserPin", username: username, pin: pinReset });
+    }
+
     _syncUserToSheet({
       action: "saveUser",
       username: username,
       name: user.name,
-      pin: user.pin,
       divisions: user.divisions || [user.division || "KITCHEN"],
       role: user.role,
       avatar: user.avatar,
@@ -12341,7 +12275,6 @@ const AuthService = (() => {
         currentUsers[uName] = {
           username: uName,
           name: u.name || uName,
-          pin: String(u.pin || "1234"),
           division: u.division || "KITCHEN",
           divisions: Array.isArray(u.divisions) ? u.divisions : [u.division || "KITCHEN"],
           role: u.role || "staff",
@@ -12527,7 +12460,7 @@ const App = (() => {
     if (userEl) setTimeout(() => userEl.focus(), 80);
   }
 
-  function handleLogin(e) {
+  async function handleLogin(e) {
     if (e && e.preventDefault) e.preventDefault();
     try {
       const userEl = document.getElementById("loginUser");
@@ -12536,7 +12469,7 @@ const App = (() => {
       const username = userEl ? userEl.value.trim() : "";
       const pin = pinEl ? pinEl.value.trim() : "";
 
-      const result = AuthService.login(username, pin);
+      const result = await AuthService.login(username, pin);
       if (result.success) {
         if (errorEl) errorEl.style.display = "none";
         showToast(result.message, "success");
@@ -14507,7 +14440,6 @@ const App = (() => {
                       <div style="display:flex; align-items:center; gap:6px; margin-top:2px; flex-wrap:wrap;">
                         ${badgesHtml}
                         <span style="font-size:.7rem; color:var(--on-surface-variant);">ID: ${esc(u.username)}</span>
-                        <span style="font-size:.7rem; color:var(--primary); font-weight:700;">PIN: ${esc(u.pin || '1234')}</span>
                       </div>
                     </div>
                   </div>
