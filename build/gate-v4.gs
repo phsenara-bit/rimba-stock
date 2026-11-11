@@ -441,6 +441,43 @@ const G2_TXN_DEFAULT_LIMIT = 500;
 const G2_TXN_MAX_LIMIT = 2000;
 const G2_TXN_CACHE_SECONDS = 60;
 
+// Kolom "Waktu Input" di sheet sering berubah jadi objek Date (Sheets
+// meng-autoparse "2026-11-11 09:02:00"). Kalau dibiarkan, String(Date) jadi
+// "Wed Nov 11 2026 ..." sehingga filter tanggal di app tidak pernah cocok dan
+// riwayat tampak kosong walau beranda menampilkan transaksinya.
+function _g2DateIso_(v) {
+  try {
+    if (v && typeof v === "object" && typeof v.getTime === "function" && !isNaN(v.getTime())) {
+      return Utilities.formatDate(v, "Asia/Jakarta", "yyyy-MM-dd");
+    }
+  } catch (e) { /* lanjut ke teks */ }
+  const t = _g2Str(v);
+  if (!t) return "";
+  let m = t.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return m[1] + "-" + m[2] + "-" + m[3];
+  m = t.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  if (m) {
+    return m[3] + "-" + ("0" + m[2]).slice(-2) + "-" + ("0" + m[1]).slice(-2);
+  }
+  try {
+    const d = new Date(t);
+    if (!isNaN(d.getTime())) return Utilities.formatDate(d, "Asia/Jakarta", "yyyy-MM-dd");
+  } catch (e) {}
+  return "";
+}
+
+function _g2TimeHms_(v) {
+  try {
+    if (v && typeof v === "object" && typeof v.getTime === "function" && !isNaN(v.getTime())) {
+      return Utilities.formatDate(v, "Asia/Jakarta", "HH:mm:ss");
+    }
+  } catch (e) {}
+  const t = _g2Str(v);
+  const m = t.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (m) return ("0" + m[1]).slice(-2) + ":" + m[2] + ":" + (m[3] || "00");
+  return "";
+}
+
 function _g2HandleReadTransactions(e, user) {
   let limit = parseInt((e && e.parameter && e.parameter.limit) || "", 10);
   if (!(limit > 0)) limit = G2_TXN_DEFAULT_LIMIT;
@@ -467,7 +504,10 @@ function _g2HandleReadTransactions(e, user) {
           const r = vals[i];
           const id = _g2Str(r[0]);
           if (!id) continue;
-          const when = _g2Str(r[1]);
+          const whenRaw = r[1];
+          const whenDate = _g2DateIso_(whenRaw);
+          const whenTime = _g2TimeHms_(whenRaw);
+          if (!whenDate) continue;
           const notes = _g2Str(r[9]);
           // Catatan spoil disimpan sebagai "[SPOIL: alasan] sisa catatan".
           let spoilReason = "";
@@ -479,8 +519,8 @@ function _g2HandleReadTransactions(e, user) {
           }
           rows.push({
             id: id,
-            date: when.slice(0, 10),
-            time: when.slice(11, 19),
+            date: whenDate,
+            time: whenTime,
             division: _g2Str(r[2]).toUpperCase(),
             staff: _g2Str(r[3]),
             itemId: _g2Str(r[4]),

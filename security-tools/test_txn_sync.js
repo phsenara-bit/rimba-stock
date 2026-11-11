@@ -27,7 +27,7 @@ const CODE = fs.readFileSync(path.join(ROOT, "Code.gs"), "utf8");
 function bootBackend(opts) {
   const props = new Map(Object.entries((opts && opts.props) || {}));
   const store = new Map();
-  const logRows = (opts && opts.logRows) || [];
+  const logRows = ((opts && opts.logRows) || []).slice();   // salin: jangan mutasi fixture bersama
   let uuid = 0;
 
   const cache = {
@@ -84,7 +84,7 @@ function bootBackend(opts) {
     },
     Utilities: {
       getUuid: () => "uuid-" + (++uuid) + "-" + Math.random().toString(16).slice(2),
-      formatDate: () => "2026-11-10 08:00:00"
+      formatDate: (d, tz, fmt) => fmt === "yyyy-MM-dd" ? "2026-11-11" : fmt === "HH:mm:ss" ? "09:02:00" : "2026-11-10 08:00:00"
     },
     ContentService: {
       MimeType: { JSON: "json" },
@@ -152,6 +152,36 @@ console.log("\n=== Backend: readTransactions ===");
 /* ══════════════════════════════════════════════════════════════════════
  * BAGIAN 2 — frontend (_mergeTransactions)
  * ══════════════════════════════════════════════════════════════════════ */
+console.log("\n=== Backend: tanggal berupa objek Date dari sheet ===");
+{
+  // Sheets meng-autoparse "2026-11-11 09:02:00" jadi objek Date. Dulu
+  // String(Date) -> "Wed Nov 11 2026 ..." dan filter tanggal app tidak cocok,
+  // sehingga riwayat kosong walau beranda menampilkan transaksinya.
+  const D = new Date(2026, 10, 11, 9, 2, 0);   // 11 Nov 2026 09:02 waktu lokal
+  const rows = [
+    ["TXN-D1", D, "KITCHEN", "Ragil", "15", "Ayam Kampung", "EKOR", "OUT", "12", "", "44000", "528000"],
+    ["TXN-D2", "2026-11-11 07:30:00", "BAR", "Doni", "40", "Blueband", "PCS", "IN", "3", "", "15000", "45000"]
+  ];
+  const r = bootBackend({ props: OWNER, logRows: rows });
+  const out = JSON.parse(r._g2HandleReadTransactions({ parameter: {} }, { role: "staff" }).getContent());
+  const d1 = out.transactions.find(t => t.id === "TXN-D1");
+  const d2 = out.transactions.find(t => t.id === "TXN-D2");
+  ok("Date object → date ISO", d1 && /^\d{4}-\d{2}-\d{2}$/.test(d1.date), d1 && d1.date);
+  ok("Date object → tanggal benar", d1 && d1.date === "2026-11-11", d1 && d1.date);
+  ok("Date object → jam terbaca", d1 && /^\d{2}:\d{2}:\d{2}$/.test(d1.time), d1 && d1.time);
+  ok("string waktu → date ISO", d2 && d2.date === "2026-11-11", d2 && d2.date);
+  ok("string waktu → jam terbaca", d2 && d2.time === "07:30:00", d2 && d2.time);
+}
+
+console.log("\n=== Filter tanggal: transaksi hari ini harus lolos ===");
+{
+  const r = bootBackend({ props: OWNER, logRows: LOG });
+  const out = JSON.parse(r._g2HandleReadTransactions({ parameter: {} }, { role: "staff" }).getContent());
+  const today = "2026-11-10";
+  const lolos = out.transactions.filter(t => t.date >= today && t.date <= today);
+  ok("filter rentang tanggal menemukan transaksi", lolos.length === 3, lolos.length);
+}
+
 console.log("\n=== Frontend: gabung riwayat lokal + server ===");
 {
   const html = fs.readFileSync(path.join(ROOT, "index.html"), "utf8");

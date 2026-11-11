@@ -13697,14 +13697,21 @@ const App = (() => {
   }
 
   // ── HISTORY ───────────────────────────────────────────────────────
-  const _todayIso = new Date().toISOString().split("T")[0];
+  // Tanggal hari ini menurut waktu LOKAL. toISOString() memakai UTC, jadi
+  // antara 00:00-07:00 WIB nilainya masih tanggal kemarin dan transaksi pagi
+  // tidak muncul di filter "Hari Ini".
+  function _localIsoDate(d) {
+    const x = d || new Date();
+    return x.getFullYear() + "-" + ("0" + (x.getMonth() + 1)).slice(-2) + "-" + ("0" + x.getDate()).slice(-2);
+  }
+  const _todayIso = _localIsoDate();
   let historyFilter = "ALL";
   let historyStartDate = _todayIso;
   let historyEndDate = _todayIso;
   let historyStaff = "ALL";
 
   function renderHistory() {
-    const todayStr = new Date().toISOString().split("T")[0];
+    const todayStr = _localIsoDate();
     if (!historyStartDate && !historyEndDate) {
       historyStartDate = todayStr;
       historyEndDate = todayStr;
@@ -13800,14 +13807,14 @@ const App = (() => {
 
   function setHistoryDatePreset(preset) {
     const today = new Date();
-    const todayIso = today.toISOString().split("T")[0];
+    const todayIso = _localIsoDate(today);
 
     if (preset === "TODAY") {
       historyStartDate = todayIso;
       historyEndDate = todayIso;
     } else if (preset === "7DAYS") {
       const past = new Date(today.getTime() - 6 * 24 * 60 * 60 * 1000);
-      historyStartDate = past.toISOString().split("T")[0];
+      historyStartDate = _localIsoDate(past);
       historyEndDate = todayIso;
     } else if (preset === "MONTH") {
       const year = today.getFullYear();
@@ -15280,7 +15287,7 @@ const App = (() => {
     _changePinTargetUser = null;
   }
 
-  function submitChangePin(e) {
+  async function submitChangePin(e) {
     if (e && e.preventDefault) e.preventDefault();
     const inputOld = document.getElementById("inputOldPin");
     const inputNew = document.getElementById("inputNewPin");
@@ -15310,11 +15317,18 @@ const App = (() => {
       return false;
     }
 
+    // Keduanya async: tanpa await, hasilnya Promise dan res.success selalu
+    // undefined → muncul toast merah tanpa teks padahal PIN sudah berubah.
     let res;
-    if (_changePinTargetUser) {
-      res = AuthService.setEmployeePin(_changePinTargetUser, newPin);
-    } else {
-      res = AuthService.changeMyPin(oldPin, newPin);
+    try {
+      if (_changePinTargetUser) {
+        res = await AuthService.setEmployeePin(_changePinTargetUser, newPin);
+      } else {
+        res = await AuthService.changeMyPin(oldPin, newPin);
+      }
+    } catch (err) {
+      showToast("Gagal mengubah PIN: " + (err && err.message ? err.message : err), "error");
+      return false;
     }
 
     if (res.success) {
