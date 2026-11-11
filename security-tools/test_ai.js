@@ -149,7 +149,7 @@ console.log("\n=== 2. Mode ringkasan (pertanyaan umum) ===");
   ok("memuat agregat divisi", /Divisi KITCHEN: 2 barang/.test(facts.text));
 }
 
-console.log("\n=== 3. Prompt: riwayat dibatasi 2 giliran ===");
+console.log("\n=== 3. Prompt: riwayat dibatasi 4 giliran ===");
 {
   const ctx = makeCtx(buildFakeData());
   const facts = vm.runInContext("_aiFacts_", ctx)("stok ayam");
@@ -159,7 +159,8 @@ console.log("\n=== 3. Prompt: riwayat dibatasi 2 giliran ===");
     history.push({ role: "model", text: "jawaban lama nomor " + i });
   }
   const prompt = vm.runInContext("_aiPrompt_", ctx)(facts, "kapan minusnya?", history, "Ayam Kampung");
-  ok("hanya 2 giliran terakhir ikut", /pertanyaan lama nomor 9/.test(prompt) && !/pertanyaan lama nomor 7/.test(prompt));
+  // 4 giliran terakhir = nomor 6..9; nomor 5 ke bawah dibuang
+  ok("hanya 4 giliran terakhir ikut", /pertanyaan lama nomor 9/.test(prompt) && /pertanyaan lama nomor 6/.test(prompt) && !/pertanyaan lama nomor 5/.test(prompt));
   ok("ada blok topik", /Topik yang sedang dibahas: Ayam Kampung/.test(prompt));
   ok("ada aturan anti-ngarang", /Dilarang mengarang angka/.test(prompt));
 }

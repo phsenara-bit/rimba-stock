@@ -11,12 +11,12 @@
 //
 // Prinsip: ANGKA DIHITUNG DI SINI, model hanya merangkai kalimat.
 
-const AI_HISTORY_MAX_TURNS = 2;   // giliran riwayat yang ikut dikirim
+const AI_HISTORY_MAX_TURNS = 4;   // giliran riwayat yang ikut dikirim (override: AI_HISTORY_TURNS)
 const AI_CACHE_SECONDS = 600;     // jawaban sama dalam 10 menit tidak memanggil model
 const AI_MAX_QUESTION = 300;
 const AI_MUTASI_SCAN = 400;       // baris log mutasi terakhir yang dibaca
 const AI_MUTASI_ROWS = 12;        // baris mutasi per barang yang dikirim ke model
-const AI_VER = "mirim-12";         // naikkan saat prompt/format fakta berubah → cache lama gugur
+const AI_VER = "mirim-13";         // naikkan saat prompt/format fakta berubah → cache lama gugur
 
 const AI_MONTHS = {
   januari: 1, februari: 2, maret: 3, april: 4, mei: 5, juni: 6,
@@ -134,6 +134,19 @@ function handleAskAI_(e, user, payload) {
 
   const params = (e && e.parameter) || {};
   const src = payload || {};
+
+  // Jalur GET (doGet -> handleAskAI_(e, user, null)) mengirim riwayat & topik
+  // sebagai parameter URL, bukan payload. Tanpa parsing ini prompt selalu
+  // kosong riwayat: pertanyaan lanjutan ("siapa yang input?") kehilangan
+  // konteks dan model menjawab dari ringkasan umum.
+  if (!Array.isArray(src.history) && params.history) {
+    try {
+      const parsed = JSON.parse(String(params.history));
+      if (Array.isArray(parsed)) src.history = parsed;
+    } catch (err) { src.history = []; }
+  }
+  if (!src.topic && params.topic) src.topic = String(params.topic);
+
   const question = String(src.q || params.q || "").trim().slice(0, AI_MAX_QUESTION);
   if (!question) return _aiError_("EMPTY", "Pertanyaan kosong.");
 
@@ -161,7 +174,13 @@ function handleAskAI_(e, user, payload) {
   let cacheKey = "";
   try {
     cache = CacheService.getScriptCache();
-    cacheKey = "ai_" + AI_VER + "_" + _aiHash_(username + "|" + question.toLowerCase() + "|" + today);
+    // Topik & riwayat ikut jadi kunci: pertanyaan yang sama di percakapan
+    // berbeda tidak boleh memakai jawaban lama yang konteksnya lain.
+    cacheKey = "ai_" + AI_VER + "_" + _aiHash_(
+      username + "|" + question.toLowerCase() + "|" + today +
+      "|" + String(src.topic || "") +
+      "|" + JSON.stringify(src.history || [])
+    );
     const hit = cache.get(cacheKey);
     if (hit) {
       const parsed = JSON.parse(hit);
@@ -819,7 +838,9 @@ function _aiFacts_(question, hintTopic) {
     sheetName: data.sheetName,
     dayElapsed: dayElapsed,
     mode: matched.length ? "item" : "ringkasan",
-    topic: matched.length ? matched[0].name : "Ringkasan stok",
+    topic: matched.length
+      ? matched[0].name
+      : ((/minus|negatif/i.test(question) || /minus/i.test(String(hintTopic || ""))) ? "Barang stok MINUS" : "Ringkasan stok"),
     matchedItems: matched.length,
     period: periodLabel,
     isCurrent: isCurrent,
@@ -890,8 +911,22 @@ function _aiFacts_(question, hintTopic) {
     for (const k in perDiv) {
       lines.push("Divisi " + k + ": " + perDiv[k].count + " barang, nilai " + _aiRupiah_(perDiv[k].nilai) + ", minus " + perDiv[k].minus);
     }
-    lines.push("TRANSAKSI TERAKHIR YANG DICATAT (paling baru di atas) — siapa input & catatannya:\n" +
+    lines.push("TRANSAKSI TERAKHIR SELURUH BARANG (paling baru di atas) — ini BUKAN khusus barang minus, " +
+      "jangan dipakai menjawab siapa penyebab minus:\n" +
       _aiMutasiText_(_aiMutasi_("", 10, mutMonth, mutYear)));
+
+    // Pertanyaan lanjutan "siapa yang input / siapa penyebabnya" harus dijawab
+    // dari transaksi barang yang minus, bukan dari transaksi terakhir barang lain.
+    if (negative.length) {
+      const negLines = [];
+      for (let ni = 0; ni < Math.min(negative.length, 3); ni++) {
+        const nit = negative[ni];
+        negLines.push(nit.name + " (stok " + _aiNum_(nit.stock) + " " + nit.unit + "):\n" +
+          _aiMutasiText_(_aiMutasi_(nit.name, 5, mutMonth, mutYear)));
+      }
+      lines.push("TRANSAKSI BARANG MINUS — siapa yang input & catatan alasannya (pakai ini untuk pertanyaan 'siapa yang input/sebab minus'):\n" +
+        negLines.join("\n"));
+    }
 
     // Pertanyaan "sebutkan/daftar/apa saja" butuh nama barangnya, bukan cuma
     // ringkasan angka. Daftar nama saja supaya prompt tetap ringan.
@@ -955,11 +990,15 @@ function _aiPrompt_(facts, question, history, lastTopic) {
     "15. 'stok terbanyak'/'paling banyak'/'tertinggi' → pakai baris '5 stok TERBANYAK'. 'stok terendah'/'paling sedikit' → baris '5 stok TERENDAH'. " +
     "Jangan menjawab pertanyaan stok terbanyak/terendah dengan nilai aset.\n" +
     "16. Pertanyaan 'total minus', 'berapa minus', 'yang minus', 'stok minus' → pakai baris 'Barang stok MINUS' (jumlah barang, total qty minus, total nilai minus). " +
-    "'Nilai stok (aset)' adalah total nilai seluruh persediaan — itu BUKAN jawaban untuk pertanyaan minus. Jangan menyebut aset kalau yang ditanya minus.";
+    "'Nilai stok (aset)' adalah total nilai seluruh persediaan — itu BUKAN jawaban untuk pertanyaan minus. Jangan menyebut aset kalau yang ditanya minus.\n" +
+    "17. Pertanyaan 'siapa yang input'/'siapa penyebabnya' yang menyambung pembahasan minus atau barang tertentu → jawab HANYA dari blok 'TRANSAKSI BARANG MINUS' " +
+    "atau transaksi barang yang sedang dibahas. JANGAN menyebut nama staf dari 'TRANSAKSI TERAKHIR SELURUH BARANG' — itu transaksi barang lain. " +
+    "Kalau barang minus itu tidak punya catatan penginput/alasan, katakan catatannya belum ada untuk barang tersebut. Jangan menyimpulkan penyebabnya dari barang lain.";
 
   let histBlock = "";
   if (Array.isArray(history) && history.length) {
-    const turns = history.slice(-AI_HISTORY_MAX_TURNS * 2);
+    const maxTurns = parseInt(_aiProp_("AI_HISTORY_TURNS", ""), 10) || AI_HISTORY_MAX_TURNS;
+    const turns = history.slice(-maxTurns * 2);
     const lines = [];
     for (let i = 0; i < turns.length; i++) {
       const t = turns[i] || {};

@@ -91,13 +91,13 @@ ctx.handleReadMonthlySheetData = (p) => {
   return { getContent: () => JSON.stringify(sh.indexOf("Okt") === 0 ? OKT : NOV) };
 };
 
-const ask = (q) => {
-  const facts = vm.runInContext("_aiFacts_", ctx)(q);
-  const prompt = vm.runInContext("_aiPrompt_", ctx)(facts, q, [], "");
+const ask = (q, hist, topic) => {
+  const facts = vm.runInContext("_aiFacts_", ctx)(q, topic || "");
+  const prompt = vm.runInContext("_aiPrompt_", ctx)(facts, q, hist || [], topic || "");
   const t0 = Date.now();
   let answer = "", err = "";
   try { answer = vm.runInContext("_aiCall_", ctx)(prompt); } catch (e) { err = String(e.message || e); }
-  return { answer, err, ms: Date.now() - t0, mode: facts.mode, period: facts.period };
+  return { answer, err, ms: Date.now() - t0, mode: facts.mode, period: facts.period, topic: facts.topic };
 };
 
 const TOLAK = /di luar jangkauan|di luar topik|di luar konteks|tidak bisa bantu|bukan wewenang/i;
@@ -137,6 +137,24 @@ for (const c of CASES) {
     if (TOLAK.test(r.answer)) console.log("  ✅ ditolak (memang di luar topik)");
     else { console.log("  ⚠️  tidak ditolak — cek apakah jawabannya masih soal stok"); }
   }
+}
+
+// ── lanjutan dalam satu percakapan: riwayat + topik harus dipakai ──
+console.log("\n════════ LANJUTAN SATU PERCAKAPAN ════════");
+{
+  const r1 = ask("berapa total minus bulan ini?");
+  console.log("\nQ1: berapa total minus bulan ini?");
+  console.log("A1: " + r1.answer);
+  const hist = [
+    { role: "user", text: "berapa total minus bulan ini?" },
+    { role: "model", text: r1.answer }
+  ];
+  const r2 = ask("siapa yang input?", hist, r1.topic);
+  console.log("\nQ2: siapa yang input?   (topik=" + r1.topic + ")");
+  console.log("A2: " + r2.answer);
+  if (GREET.test(r2.answer)) { console.log("  ❌ lanjutan dibuka dengan sapaan"); bad++; }
+  else if (!/minus|ayam kampung|catatan/i.test(r2.answer)) { console.log("  ❌ lanjutan kehilangan konteks minus"); bad++; }
+  else console.log("  ✅ lanjutan nyambung ke topik minus");
 }
 
 console.log("\n" + (bad ? "ADA MASALAH (" + bad + ")" : "SEMUA SESUAI"));
