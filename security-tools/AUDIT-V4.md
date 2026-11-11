@@ -56,3 +56,41 @@ curl -s -L -X POST "$U" -d "{\"action\":\"deleteUser\",\"username\":\"ragil\",\"
 Jangan menyatakan "aman" atau memberi persentase sebelum bagian 1 lulus semua
 dan bagian 2–3 menunjukkan hasil yang disebut di atas. Kalau satu route masih
 membalas data, perbaiki dulu — jangan dilaporkan sebagai selesai.
+
+---
+
+# Audit v4.1 — pengerasan (11 Nov 2026)
+
+Dijalankan setelah deploy `@48`. Enam temuan v4 ditutup di sini.
+
+## Yang harus lulus dari luar
+
+| Permintaan | Hasil yang benar |
+|---|---|
+| `POST {"action":"login","username":"satian","pin":"1234"}` | `UNAUTHORIZED` — bootstrap owner sudah dihapus |
+| `POST {"action":"login","username":"<tidak-ada>","pin":"0000"}` | `UNAUTHORIZED` — pesan tidak membedakan user ada/tidak |
+| 9 route publik | `UNAUTHORIZED` |
+
+Catatan curl: pakai `-d` **tanpa** `-X POST`. Dengan `-X POST`, curl memaksa POST
+saat mengikuti 302 dan yang keluar halaman HTML Google, bukan JSON.
+
+## Perubahan perilaku yang perlu diketahui staf
+
+- Semua sesi lama **mati** setelah deploy ini: token lama tidak punya kolom
+  revisi akun, jadi dianggap tidak sah. Semua orang login ulang sekali.
+- Ganti PIN sendiri tidak melempar keluar sesi yang sedang dipakai; sesi lain
+  akun itu yang mati.
+- Akun baru wajib punya PIN minimal 4 digit. Tambah karyawan tanpa PIN ditolak.
+- Staf tidak bisa lagi melabeli transaksi ke divisi lain; server memaksa
+  divisinya sendiri.
+- Nama di `MUTASI_APP` sekarang selalu nama akun yang login, bukan kiriman
+  browser.
+
+## Tes otomatis
+
+```bash
+node security-tools/test_security_hardening.js   # 17 assert
+```
+
+Mencakup: identitas audit dari sesi, batas divisi staf, bootstrap owner hilang,
+PIN default hilang, revokasi sesi, throttle login gabungan.
