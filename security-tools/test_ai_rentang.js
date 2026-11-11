@@ -158,12 +158,38 @@ console.log("\n=== E. Bulan yang tabnya belum ada ===");
   ok("tetap menyertakan angka Oktober", /Oktober 2026: Ayam Kampung 70 EKOR/.test(facts.text));
 }
 
+console.log("\n=== G. 'bulan ini dan bulan lalu' = dua periode ===");
+{
+  const ctx = makeCtx();
+  const f = q => vm.runInContext("_aiMonthsInQuestion_", ctx)(q).map(x => x.month);
+  ok("'bulan ini dan bulan lalu' → [11,10]", JSON.stringify(f("lontong bulan ini dan bulan lalu")) === "[11,10]", JSON.stringify(f("lontong bulan ini dan bulan lalu")));
+  ok("'bulan lalu dan bulan ini' → [10,11] (ikut urutan kalimat)", JSON.stringify(f("bulan lalu dan bulan ini")) === "[10,11]", JSON.stringify(f("bulan lalu dan bulan ini")));
+  ok("'bulan ini' saja → [11]", JSON.stringify(f("stok bulan ini")) === "[11]", JSON.stringify(f("stok bulan ini")));
+  ok("'bulan lalu' saja → [10]", JSON.stringify(f("stok bulan lalu")) === "[10]", JSON.stringify(f("stok bulan lalu")));
+
+  const facts = vm.runInContext("_aiFacts_", ctx)("perbandingan lontong bulan ini dan bulan lalu", "");
+  ok("pertanyaan lontong jadi mode banding", facts.mode === "banding", facts.mode);
+  ok("blok perbandingan berisi kedua periode", /PERBANDINGAN: November 2026 vs Oktober 2026/.test(facts.text), facts.text.match(/PERBANDINGAN:[^\n]*/) || facts.text.slice(0, 200));
+  ok("blok perbandingan menyebut barang tersering", /Ayam Kampung/.test(facts.text));
+}
+
+console.log("\n=== H. Katalog saat diminta daftar ===");
+{
+  const ctx = makeCtx();
+  const facts = vm.runInContext("_aiFacts_", ctx)("sebutkan daftar semua barang", "");
+  ok("daftar barang ikut di FAKTA", /DAFTAR BARANG LENGKAP/.test(facts.text), facts.text.slice(-200));
+  ok("nama barang muncul", /Beras/.test(facts.text) && /Ayam Kampung/.test(facts.text));
+
+  const facts2 = vm.runInContext("_aiFacts_", ctx)("stok ayam berapa", "");
+  ok("pertanyaan biasa tidak memuat katalog penuh", !/DAFTAR BARANG LENGKAP/.test(facts2.text));
+}
+
 console.log("\n=== F. Prompt: aturan perbandingan masuk ===");
 {
   const ctx = makeCtx();
   const facts = vm.runInContext("_aiFacts_", ctx)("periode tanggal 1-7 oktober dan november", "");
   const prompt = vm.runInContext("_aiPrompt_", ctx)(facts, "periode tanggal 1-7 oktober dan november", [], "");
-  ok("izin perbandingan antar periode", /perbandingan antar periode atau antar bulan/.test(prompt));
+  ok("izin perbandingan antar periode", /perbandingan antar tanggal\/bulan\/periode/.test(prompt));
   ok("aturan 12 perbandingan", /12\. Kalau FAKTA memuat blok PERBANDINGAN/.test(prompt));
   ok("aturan 13 rentang tanggal", /13\. Rentang tanggal/.test(prompt));
   ok("note 'jangan menolak' ikut ke prompt", /Jangan menolak/.test(prompt));
