@@ -44,16 +44,20 @@ function getOrCreateUsersSheet(ss) {
     const headerRange = sheet.getRange(1, 1, 1, headers.length);
     headerRange.setBackground("#1e293b").setFontColor("#ffffff").setFontWeight("bold").setHorizontalAlignment("center");
 
-    // Akun default awal (Tanpa satian!)
+    // Akun awal untuk sheet BARU. PIN dibuat acak per akun — bukan 1234 —
+    // dan bisa dilihat pemilik di tab DATA_PENGGUNA lalu diganti.
     const initialUsers = [
-      ["admin", "Admin Rimba Alam", "1234", "KITCHEN, BAR, PASTRY, LAINNYA", "superadmin", "👔", "2026-01-01"],
-      ["ragil", "Ragil", "1234", "KITCHEN, BAR, PASTRY, LAINNYA", "admin", "👨‍💼", "2026-01-01"],
-      ["angel", "Angel", "1234", "KITCHEN, BAR, PASTRY, LAINNYA", "admin", "👩‍💼", "2026-01-01"],
-      ["chef", "Chef Rina", "1234", "KITCHEN, LAINNYA", "staff", "🍳", "2026-01-01"],
-      ["rey", "Rey", "1234", "KITCHEN, LAINNYA", "staff", "🍳", "2026-01-01"],
-      ["barista", "Doni", "1234", "BAR, LAINNYA", "staff", "☕", "2026-01-01"],
-      ["pastry", "Dewi Pastry", "1234", "PASTRY, LAINNYA", "staff", "🍰", "2026-01-01"]
-    ];
+      ["admin", "Admin Rimba Alam", "", "KITCHEN, BAR, PASTRY, LAINNYA", "superadmin", "👔", "2026-01-01"],
+      ["ragil", "Ragil", "", "KITCHEN, BAR, PASTRY, LAINNYA", "admin", "👨‍💼", "2026-01-01"],
+      ["angel", "Angel", "", "KITCHEN, BAR, PASTRY, LAINNYA", "admin", "👩‍💼", "2026-01-01"],
+      ["chef", "Chef Rina", "", "KITCHEN, LAINNYA", "staff", "🍳", "2026-01-01"],
+      ["rey", "Rey", "", "KITCHEN, LAINNYA", "staff", "🍳", "2026-01-01"],
+      ["barista", "Doni", "", "BAR, LAINNYA", "staff", "☕", "2026-01-01"],
+      ["pastry", "Dewi Pastry", "", "PASTRY, LAINNYA", "staff", "🍰", "2026-01-01"]
+    ].map(function (u) {
+      u[2] = String(Math.floor(1000 + Math.random() * 9000));
+      return u;
+    });
     sheet.getRange(2, 1, initialUsers.length, headers.length).setValues(initialUsers)
       .setFontSize(11)
       .setFontFamily("Arial")
@@ -1376,7 +1380,8 @@ function handleReadUsers(e) {
         if (!username || username === "satian") continue; // Abaikan baris kosong atau satian
 
         const name = String(row[1] || username).trim();
-        const pin = String(row[2] || "1234").trim();
+        // PIN kosong = akun tanpa akses. Jangan pernah diisi 1234 otomatis.
+        const pin = String(row[2] === undefined || row[2] === null ? "" : row[2]).trim().replace(/^'/, "");
         const divisionsRaw = String(row[3] || "KITCHEN").trim();
         const divisions = divisionsRaw.split(",").map(d => d.trim().toUpperCase()).filter(Boolean);
         const role = username === "admin" ? "superadmin" : String(row[4] || "staff").trim().toLowerCase();
@@ -1422,7 +1427,7 @@ function handleSaveUser(payload, ss) {
     const sheet = getOrCreateUsersSheet(ss);
     const lastRow = sheet.getLastRow();
     const name = String(payload.name || username).trim();
-    const pin = String(payload.pin || "1234").trim();
+    let pin = String(payload.pin || "").trim();
     let divisions = [];
     if (Array.isArray(payload.divisions)) {
       divisions = payload.divisions.map(d => String(d).trim().toUpperCase());
@@ -1444,6 +1449,19 @@ function handleSaveUser(payload, ss) {
           break;
         }
       }
+    }
+
+    if (foundRow > 0) {
+      // Edit akun tanpa PIN baru → PIN lama dipertahankan, bukan direset.
+      if (!pin) {
+        const cur = String(sheet.getRange(foundRow, 3).getValue() || "").trim().replace(/^'/, "");
+        pin = _g2Pin(cur);
+      }
+    } else if (pin.length < 4) {
+      return createJsonResponse({
+        success: false,
+        message: "PIN wajib diisi (minimal 4 digit) untuk akun baru."
+      }, 400);
     }
 
     if (foundRow > 0) {

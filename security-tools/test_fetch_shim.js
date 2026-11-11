@@ -22,7 +22,7 @@ const win = {
 };
 win.window = win;
 
-const sandbox = { window: win, console: console, Promise: Promise, URLSearchParams: URLSearchParams, JSON: JSON, encodeURIComponent: encodeURIComponent };
+const sandbox = { window: win, console: console, Promise: Promise, URLSearchParams: URLSearchParams, URL: URL, JSON: JSON, encodeURIComponent: encodeURIComponent };
 vm.createContext(sandbox);
 vm.runInContext(shimSrc, sandbox);   // blok shim sudah berupa IIFE yang langsung jalan
 

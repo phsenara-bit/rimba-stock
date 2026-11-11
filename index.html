@@ -10964,7 +10964,20 @@ const DataService = (() => {
     window.fetch = function (input, init) {
       try {
         const url = typeof input === "string" ? input : (input && input.url) || "";
-        if (url.indexOf("script.google.com") !== -1) {
+        // Harus cocok PERSIS script.google.com. Pengecekan substring dulu
+        // membuat URL seperti https://situs-lain.com/?script.google.com
+        // ikut membawa token sesi.
+        const gasHostOf = function (u) {
+          const raw = String(u || "");
+          try {
+            return new URL(raw, "https://rimbastock.my.id/").hostname.toLowerCase();
+          } catch (e) {
+            const m = raw.match(/^[a-z]+:\/\/([^\/?#]+)/i);
+            if (!m) return "";
+            return m[1].replace(/^[^@]*@/, "").replace(/:\d+$/, "").toLowerCase();
+          }
+        };
+        if (gasHostOf(url) === "script.google.com") {
           const token = readSessionToken();
           const method = ((init && init.method) || (input && input.method) || "GET").toUpperCase();
 
@@ -12005,7 +12018,7 @@ const AuthService = (() => {
   /**
    * Super Admin & Admin: Tambah Karyawan Baru
    */
-  function addUser(name, divisionOrDivisions = "KITCHEN", pin = "1234") {
+  function addUser(name, divisionOrDivisions = "KITCHEN", pin = "") {
     if (!canManageUsers()) {
       return { success: false, message: "Akses ditolak: Hanya Admin / Super Admin yang dapat menambah user." };
     }
@@ -12056,10 +12069,15 @@ const AuthService = (() => {
 
     _saveUsers(users);
 
+    if (!pin || pin.length < 4) {
+      return { success: false, message: "PIN karyawan baru wajib diisi (minimal 4 angka)." };
+    }
+
     _syncUserToSheet({
       action: "saveUser",
       username: username,
       name: users[username].name,
+      pin: pin,
       divisions: divisions,
       role: role,
       avatar: avatar,
