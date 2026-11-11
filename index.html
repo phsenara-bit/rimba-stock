@@ -9623,6 +9623,90 @@ const DataService = (() => {
     return _deepClone(_transactions.slice(0, limit));
   }
 
+  /* ── Riwayat dari server (MUTASI_APP) ────────────────────────────────
+   * Dulu riwayat cuma di localStorage, jadi hilang saat ganti perangkat /
+   * incognito dan tidak pernah sama antar staf. Sekarang sheet jadi sumber
+   * riwayat; localStorage cuma cache agar layar langsung terisi.
+   *
+   * Dijaga supaya tidak mbebani: maksimal 1 kali per 60 detik, dilewati
+   * saat tab tidak terlihat, dan hasilnya di-cache server 60 detik.
+   */
+  const TXN_SYNC_INTERVAL = 60000;
+  const TXN_SYNC_KEY = "rimba_alam_txn_sync_at_v1";
+  let _txnSyncing = false;
+  let _txnLastSync = 0;
+
+  function _mergeTransactions(incoming) {
+    if (!Array.isArray(incoming) || !incoming.length) return 0;
+    const map = {};
+    for (let i = 0; i < _transactions.length; i++) map[_transactions[i].id] = _transactions[i];
+    let added = 0;
+    for (let j = 0; j < incoming.length; j++) {
+      const t = incoming[j];
+      if (!t || !t.id) continue;
+      if (!map[t.id]) { map[t.id] = t; added++; }
+    }
+    if (!added) return 0;
+    const all = [];
+    for (const k in map) all.push(map[k]);
+    // Terbaru di atas. Transaksi lokal biasanya tanpa "time", jadi pakai
+    // date saja; yang dari sheet punya date + time.
+    all.sort(function (a, b) {
+      const da = (a.date || "") + " " + (a.time || "");
+      const db = (b.date || "") + " " + (b.time || "");
+      if (db === da) return 0;
+      return db > da ? 1 : -1;
+    });
+    _transactions = all;
+    return added;
+  }
+
+  /**
+   * Tarik riwayat dari server lalu gabung dengan yang di perangkat.
+   * Tidak pernah mengosongkan data lokal: yang belum sempat dikirim ke sheet
+   * (antrean offline) tetap dipertahankan.
+   */
+  async function fetchTransactions(opts) {
+    const o = opts || {};
+    if (_txnSyncing) return { success: false, message: "sedang menyinkronkan" };
+
+    const now = Date.now();
+    if (!o.force && now - _txnLastSync < TXN_SYNC_INTERVAL) {
+      return { success: false, message: "baru saja disinkronkan", skipped: true };
+    }
+    const url = getGasUrl();
+    if (!url) return { success: false, message: "URL server belum diatur." };
+    if (typeof AuthService !== "undefined" && !AuthService.getCurrentUser()) {
+      return { success: false, message: "Belum login.", skipped: true };
+    }
+
+    _txnSyncing = true;
+    try {
+      const u = url + (url.indexOf("?") === -1 ? "?" : "&") +
+        "action=readTransactions&limit=500&t=" + now;
+      const res = await fetch(u, { method: "GET" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      if (!data || !data.success || !Array.isArray(data.transactions)) {
+        throw new Error((data && data.message) || "format data tidak sesuai");
+      }
+      const added = _mergeTransactions(data.transactions);
+      _txnLastSync = Date.now();
+      _saveTransactions();
+      try {
+        if (typeof window !== "undefined" && window.localStorage) {
+          window.localStorage.setItem(TXN_SYNC_KEY, String(_txnLastSync));
+        }
+      } catch (e) {}
+      return { success: true, added: added, count: _transactions.length };
+    } catch (err) {
+      // Gagal (offline / token kedaluwarsa): pakai cache lokal, jangan ganggu layar.
+      return { success: false, message: err.message };
+    } finally {
+      _txnSyncing = false;
+    }
+  }
+
   /**
    * Filter riwayat transaksi secara fleksibel: tipe, rentang tanggal, staf
    */
@@ -11441,6 +11525,14 @@ const DataService = (() => {
       console.log("[DataService] Jaringan online kembali, mengirimkan antrean tertunda...");
       flushPendingSync();
     });
+
+    // Segarkan riwayat saat tab kembali terlihat / dapat fokus. Throttle 60 detik
+    // di dalam fetchTransactions menjaga ini murah; kalau tab tersembunyi kita
+    // lewati saja supaya tidak ada request yang menumpuk.
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) fetchTransactions();
+    });
+    window.addEventListener("focus", () => fetchTransactions());
   }
 
   return {
@@ -11453,6 +11545,8 @@ const DataService = (() => {
     editTransaction,
     getTransactions,
     getFilteredTransactions,
+    fetchTransactions,
+    _mergeTransactions,
     getStaffList,
     getItemDetailSummary,
     formatRupiah,
@@ -12567,10 +12661,24 @@ const App = (() => {
       renderProfileBar();
       navigateTo("dashboard", false);
       updateLowStockBadge();
+      // Riwayat dari server ditarik di latar supaya dashboard tidak menunggu.
+      setTimeout(function () { syncHistoryInBackground(); }, 1500);
     } catch (err) {
       console.error("[showMainApp error]", err);
       alert("Error saat membuka dashboard: " + err.message);
     }
+  }
+
+  // Tarik riwayat dari server di latar. Tidak memblokir layar, dan hanya
+  // me-render ulang kalau pengguna sedang melihat halaman yang terpengaruh.
+  async function syncHistoryInBackground(force = false) {
+    const res = await DataService.fetchTransactions({ force: force });
+    if (res && res.success && (res.added || 0) > 0) {
+      if (currentPage === "history") renderHistory();
+      else if (currentPage === "dashboard") renderDashboard();
+      else if (currentPage === "items") renderItemList();
+    }
+    return res;
   }
 
   function renderProfileBar() {
@@ -12631,6 +12739,7 @@ const App = (() => {
     }
 
     currentPage = page;
+    if (page === "history" || page === "dashboard") syncHistoryInBackground();
 
     if (pushHistory && window.history && window.history.pushState) {
       window.history.pushState({ page }, "", "#" + page);
