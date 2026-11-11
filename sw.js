@@ -1,4 +1,4 @@
-const CACHE_NAME = "rimba-alam-v5.4";
+const CACHE_NAME = "rimba-alam-v5.5";
 const ASSETS = [
   "./",
   "./index.html",
