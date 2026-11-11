@@ -16561,7 +16561,7 @@ if (typeof document !== "undefined") {
 <script>
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js?v=5.0")
+      navigator.serviceWorker.register("./sw.js?v=5.8")
         .then((reg) => console.log("[PWA] Service Worker aktif:", reg.scope))
         .catch((err) => console.warn("[PWA] Registrasi SW gagal:", err));
     });
@@ -16572,6 +16572,9 @@ if (typeof document !== "undefined") {
    ASISTEN STOK — modul mandiri. Tidak mengubah fungsi lain di aplikasi.
    Sesi chat: SELALU BARU tiap dibuka. Tutup chat = percakapan dihapus,
    tidak disimpan ke mana pun (tidak ada sessionStorage/localStorage).
+   Memori sesi = 12 pertanyaan terakhir (maks 80 karakter each) yang hidup
+   HANYA di RAM: ikut terhapus saat chat ditutup, dan hanya pertanyaannya —
+   jawaban Mirim tidak pernah dipakai sebagai fakta.
    Ikon bisa diganti: App.setAskAiIcon("✨") / URL gambar / data URI.
    ═══════════════════════════════════════════════════════════════════════ */
 (function () {
@@ -16585,7 +16588,9 @@ if (typeof document !== "undefined") {
 
   // log hanya hidup di memori. gen dinaikkan tiap sesi ditutup, supaya
   // jawaban yang telat datang tidak "menghidupkan" chat yang sudah ditutup.
-  var state = { log: [], topic: "", busy: false, gen: 0, animIdx: -1, animTimer: null, waitTimer: null };
+  // qMemory: daftar pertanyaan sesi ini (RAM saja, ikut terhapus saat chat ditutup).
+  // Maksimal 12 pertanyaan x 80 karakter; server memotongnya lagi.
+  var state = { log: [], topic: "", qMemory: [], busy: false, gen: 0, animIdx: -1, animTimer: null, waitTimer: null };
   var TYPE_TOTAL_MS = 1400;      // durasi ketik total (jawaban panjang tetap cepat)
   var TYPE_MIN_MS = 450;
 
@@ -16650,6 +16655,41 @@ if (typeof document !== "undefined") {
       turns.push({ role: m.role, text: String(m.text || "").slice(0, 260) });
     });
     return turns;
+  }
+
+
+  /* ── Memori pertanyaan sesi (RAM saja) ───────────────────────────
+     Yang dikirim hanya PERTANYAAN, bukan jawaban Mirim: jawaban lama tidak
+     boleh dianggap fakta. Batas 12 x 80 karakter di sini dan di server. */
+  var QMEM_MAX = 12;
+  var QMEM_CHARS = 80;
+
+  function sanitizeMemoryItem(s) {
+    return String(s == null ? "" : s)
+      .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, QMEM_CHARS);
+  }
+
+  function pushQuestionMemory(mem, q) {
+    var list = Array.isArray(mem) ? mem.slice(0) : [];
+    var s = sanitizeMemoryItem(q);
+    if (s) list.push(s);
+    return list.slice(-QMEM_MAX);
+  }
+
+  function buildAskPayload(q, hist, mem, topic) {
+    var list = (Array.isArray(mem) ? mem : []).slice(-QMEM_MAX)
+      .map(sanitizeMemoryItem)
+      .filter(function (s) { return !!s; });
+    return {
+      action: "askAI",
+      q: String(q || "").slice(0, 300),
+      topic: String(topic || "").slice(0, 120),
+      history: Array.isArray(hist) ? hist.slice(-8) : [],
+      questionMemory: list
+    };
   }
 
   /* ── UI ──────────────────────────────────────────────────────── */
@@ -16887,6 +16927,8 @@ if (typeof document !== "undefined") {
   function friendlyError(data) {
     var code = (data && data.code) || "";
     if (code === "QUOTA") return data.message || "Batas pertanyaan harian sudah tercapai.";
+    if (code === "QUOTA_SHARED") return data.message || "Batas bersama Mirim hari ini sudah tercapai. Coba lagi besok.";
+    if (code === "THROTTLE" || code === "BUSY") return data.message || "Terlalu banyak permintaan. Coba lagi sebentar lagi.";
     if (code === "UNAUTHORIZED") return "Sesi kamu tidak valid. Logout lalu login lagi (nama + PIN).";
     if (code === "EMPTY") return "Pertanyaannya kosong.";
     if (code === "FORBIDDEN") return "Mirim khusus admin. Akun kamu belum punya akses.";
@@ -16928,14 +16970,17 @@ if (typeof document !== "undefined") {
       return;
     }
 
-    var params = new URLSearchParams();
-    params.set("action", "askAI");
-    params.set("q", q);
-    params.set("topic", state.topic || "");
-    params.set("history", JSON.stringify(hist));
-    params.set("t", String(Date.now()));
+    // POST JSON, bukan GET: pertanyaan + riwayat + memori bisa >2 KB dan
+    // parameter URL akan membengkak/terpotong. Shim fetch aplikasi menempelkan
+    // token sesi ke body; tidak ada PIN/kunci di sini.
+    var payload = buildAskPayload(q, hist, state.qMemory, state.topic);
+    state.qMemory = pushQuestionMemory(state.qMemory, q);
 
-    fetch(url + (url.indexOf("?") === -1 ? "?" : "&") + params.toString(), { method: "GET" })
+    fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload)
+    })
       .then(function (res) {
         if (!res.ok) throw new Error("HTTP " + res.status);
         return res.json();
@@ -17005,6 +17050,7 @@ if (typeof document !== "undefined") {
     state.animIdx = -1;
     state.log = [];
     state.topic = "";
+    state.qMemory = [];          // tutup/buka chat = memori pertanyaan ikut hilang
     state.busy = false;
     var b = document.getElementById("askAiSend");
     if (b) b.disabled = false;

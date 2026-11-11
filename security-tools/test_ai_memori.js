@@ -104,7 +104,7 @@ console.log("\n=== 1. Riwayat percakapan dari parameter URL ===");
   const e2 = { parameter: { action: "askAI", q: "siapa yang input?" } };
   captured = "";
   ctx.handleAskAI_(e2, { username: "rian", role: "admin" }, null);
-  ok("tanpa history tidak ada blok RIWAYAT", !/RIWAYAT/.test(captured));
+  ok("tanpa history tidak ada blok RIWAYAT", !/RIWAYAT \(hanya konteks/.test(captured));
 }
 
 // ═══ 2. Konteks percakapan memisahkan kunci cache ═══

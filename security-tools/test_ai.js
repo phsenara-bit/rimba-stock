@@ -175,7 +175,12 @@ console.log("\n=== 4. Kuota harian ===");
   sandbox.__mock = "jawaban uji";
   vm.runInContext("_aiCall_ = function(p){ return 'jawaban uji'; };", ctx);
 
+  // Uji kuota memakai batas per-akun; throttle per menit dimatikan dulu supaya
+  // loop di bawah tidak berhenti karena batas RPM (diuji terpisah di
+  // test_ai_sesi_kuota.js).
   ctx.__props.AI_DAILY_LIMIT = "30";
+  ctx.__props.AI_GLOBAL_RPM = "1000";
+  ctx.__props.AI_SHARED_DAILY_LIMIT = "1000";
   const user = { username: "chef", role: "admin" };
   const call = (q) => {
     const r = vm.runInContext("handleAskAI_", ctx)({ parameter: { q: q } }, user, null);
