@@ -1816,7 +1816,15 @@ netlify-drawer {
 
       <div class="form-group" style="margin-bottom:14px;">
         <label class="form-label">Alasan Koreksi <span class="text-danger">*</span></label>
-        <input type="text" id="editMutationReason" class="form-input" placeholder="Contoh: Salah ketik jumlah oleh staf" required autocomplete="off">
+        <div id="editMutationReasonChips" style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">
+          <button type="button" class="chip" data-edit-reason="Salah ketik" onclick="App.selectEditReason(this)">✍️ Salah ketik</button>
+          <button type="button" class="chip" data-edit-reason="Salah pilih barang" onclick="App.selectEditReason(this)">📦 Salah barang</button>
+          <button type="button" class="chip active" data-edit-reason="" onclick="App.selectEditReason(this)">📝 Lainnya</button>
+        </div>
+        <input type="text" id="editMutationReason" class="form-input" placeholder="Tulis alasan koreksi..." required autocomplete="off">
+        <div class="form-hint" style="font-size:.72rem; color:var(--on-surface-variant); margin-top:4px;">
+          Pilih alasan yang paling cocok, atau pilih Lainnya untuk menulis sendiri. Alasan ini tercatat di riwayat koreksi.
+        </div>
       </div>
 
       <div class="dialog-actions" style="margin-top:16px;">
@@ -15360,6 +15368,13 @@ const App = (() => {
     const reasonInput = document.getElementById("editMutationReason");
     if (reasonInput) {
       reasonInput.value = "";
+      reasonInput.style.display = "";
+    }
+    const reasonChips = document.getElementById("editMutationReasonChips");
+    if (reasonChips) {
+      Array.prototype.forEach.call(reasonChips.querySelectorAll(".chip"), function (c) {
+        c.classList.toggle("active", !c.getAttribute("data-edit-reason"));
+      });
     }
 
     overlay.classList.add("show");
@@ -15375,6 +15390,24 @@ const App = (() => {
     const overlay = document.getElementById("editMutationDialog");
     if (overlay) overlay.classList.remove("show");
     _currentEditingTxnId = null;
+  }
+
+  // Chip alasan koreksi: pilihan umum mengisi kolom, "Lainnya" membuka input manual.
+  function selectEditReason(btn) {
+    const wrap = document.getElementById("editMutationReasonChips");
+    if (!wrap) return;
+    Array.prototype.forEach.call(wrap.querySelectorAll(".chip"), function (c) {
+      c.classList.remove("active");
+    });
+    btn.classList.add("active");
+
+    const input = document.getElementById("editMutationReason");
+    const val = btn.getAttribute("data-edit-reason") || "";
+    if (input) {
+      input.value = val;
+      input.style.display = val ? "none" : "";
+      if (!val) input.focus();
+    }
   }
 
   function submitEditMutation(e) {
@@ -16357,6 +16390,7 @@ const App = (() => {
     openEditMutationDialog,
     closeEditMutationDialog,
     submitEditMutation,
+    selectEditReason,
     handleResetData,
     downloadFullBackup,
     handleRestoreBackupFile,
