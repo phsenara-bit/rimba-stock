@@ -184,6 +184,39 @@ console.log("\n=== H. Katalog saat diminta daftar ===");
   ok("pertanyaan biasa tidak memuat katalog penuh", !/DAFTAR BARANG LENGKAP/.test(facts2.text));
 }
 
+console.log("\n=== I. Nama barang dengan kata satuan (kasus 'beras ... karung') ===");
+{
+  const ctx = makeCtx();
+  // nama asli di sheet: "Beras 1 Krng =50kg" — kata "karung" TIDAK ada di nama
+  const data = {
+    items: [
+      { id: 1, name: "Beras 1 Krng =50kg", division: "KITCHEN", unit: "KRNG", price: 300000, stock: 7, stokAwal: 10, inQtyMonth: 2, outQtyMonth: 5, minStock: 2, dailyHistory: { 3: { in: 2, out: 0 }, 5: { in: 0, out: 5 } } },
+      { id: 2, name: "Tepung Beras_500gr", division: "KITCHEN", unit: "PCS", price: 12000, stock: 4, stokAwal: 4, inQtyMonth: 0, outQtyMonth: 0, minStock: 2, dailyHistory: {} }
+    ]
+  };
+  const f = q => vm.runInContext("_aiFindItems_", ctx)(data, q).map(x => x.name);
+  ok("'beras berapa karung sisanya' menemukan Beras", f("beras berapa karung sisanya sekarang")[0] === "Beras 1 Krng =50kg", f("beras berapa karung sisanya sekarang"));
+  ok("'beras sisa berapa karung' menemukan Beras", f("beras sisa berapa karung")[0] === "Beras 1 Krng =50kg", f("beras sisa berapa karung"));
+  ok("'stok beras' tetap menemukan Beras", f("stok beras")[0] === "Beras 1 Krng =50kg", f("stok beras"));
+  ok("'ayam cut 4' tidak menjaring Ayam lain", (() => {
+    const d2 = { items: [{ name: "Ayam Cut 4" }, { name: "Ayam Kampung" }, { name: "Ayam Utuh" }].map((x, i) => Object.assign({ id: i, stock: 1, unit: "KG" }, x)) };
+    return vm.runInContext("_aiFindItems_", ctx)(d2, "ayam cut 4").map(x => x.name).join(",") === "Ayam Cut 4";
+  })());
+}
+
+console.log("\n=== J. Perbandingan menyebut barang yang ditanya ===");
+{
+  const ctx = makeCtx();
+  // Minyak Goreng ada di Oktober, TIDAK ada di November, dan bukan top-5
+  const facts = vm.runInContext("_aiFacts_", ctx)("minyak goreng perbandingan bulan ini dan bulan lalu berapa", "");
+  ok("mode banding", facts.mode === "banding", facts.mode);
+  ok("ada blok BARANG YANG DITANYA", /BARANG YANG DITANYA/.test(facts.text), facts.text.slice(0, 300));
+  ok("menyebut Minyak Goreng", /Minyak Goreng/.test(facts.text));
+  const blok = (facts.text.match(/BARANG YANG DITANYA[\s\S]*?(?=\n\n|$)/) || [""])[0];
+  ok("angka Oktober disebut di blok barang", /Oktober 2026: OUT 11 LITER/.test(blok), blok);
+  ok("November dinyatakan tidak ada barangnya", /November 2026: barang tidak ada di tab bulan itu/.test(blok), blok);
+}
+
 console.log("\n=== F. Prompt: aturan perbandingan masuk ===");
 {
   const ctx = makeCtx();

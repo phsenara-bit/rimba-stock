@@ -62,13 +62,14 @@ function buildMonth(name, monthNum, spec) {
 const OKT = buildMonth("Okt 2026", 10, {
   "Lontong": { unit: "PCS", out: { 2: 40, 5: 35, 8: 30, 12: 25, 20: 40 } },
   "Ayam Kampung": { unit: "EKOR", out: { 3: 20, 9: 25 } },
-  "Beras": { unit: "KG", out: { 1: 30, 10: 28 } }
+  "Beras 1 Krng =50kg": { unit: "KRNG", out: { 1: 3, 10: 2 }, stock: 7 }
 });
 const NOV = buildMonth("Nov 2026", 11, {
   "Lontong": { unit: "PCS", out: { 1: 50, 4: 45, 7: 55, 9: 40 } },
   "Ayam Cut 4": { unit: "KG", out: { 2: 12, 6: 15, 10: 9 }, in: { 3: 30 } },
   "Ayam Kampung": { unit: "EKOR", out: { 5: 18 } },
-  "Beras": { unit: "KG", out: { 2: 26, 8: 24 } }
+  "Minyak Goreng @2000ml": { unit: "LITER", out: { 3: 4, 7: 3 }, stock: 12 },
+  "Beras 1 Krng =50kg": { unit: "KRNG", out: { 2: 2, 8: 3 }, stock: 7 }
 });
 
 const props = { AI_PROVIDER: "gemini", AI_KEY: KEY, AI_MODEL: MODEL };
@@ -107,6 +108,8 @@ const CASES = [
   { q: "cari ayam cut 4 bulan ini berapa out nya?", mustAnswer: true, want: /ayam cut 4/i },
   { q: "sebutkan semua barang di divisi kitchen", mustAnswer: true, want: /lontong|beras|ayam/i },
   { q: "stok ayam cut 4 bulan lalu berapa?", mustAnswer: true, want: /ayam cut 4/i },
+  { q: "beras berapa karung sisanya sekarang?", mustAnswer: true, want: /beras/i },
+  { q: "minyak goreng perbandingan bulan ini dan bulan lalu berapa?", mustAnswer: true, want: /minyak goreng/i },
   { q: "resep ayam bakar enak gimana?", mustAnswer: false }
 ];
 

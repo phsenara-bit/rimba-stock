@@ -2362,7 +2362,7 @@ const AI_CACHE_SECONDS = 600;     // jawaban sama dalam 10 menit tidak memanggil
 const AI_MAX_QUESTION = 300;
 const AI_MUTASI_SCAN = 400;       // baris log mutasi terakhir yang dibaca
 const AI_MUTASI_ROWS = 12;        // baris mutasi per barang yang dikirim ke model
-const AI_VER = "mirim-10";         // naikkan saat prompt/format fakta berubah → cache lama gugur
+const AI_VER = "mirim-11";         // naikkan saat prompt/format fakta berubah → cache lama gugur
 
 const AI_MONTHS = {
   januari: 1, februari: 2, maret: 3, april: 4, mei: 5, juni: 6,
@@ -2685,19 +2685,38 @@ function _aiTokens_(s) {
     .filter(function (t) { return t.length >= 3 && !AI_STOPWORDS[t]; });
 }
 
-function _aiFindItems_(data, question) {
+function _aiFindItems_(data, question, refItems) {
   const toks = _aiTokens_(question);
   if (!toks.length) return [];
 
-  const normQ = toks.join(" ");
+  // Hanya kata yang benar-benar muncul di nama barang yang dipakai menakar
+  // kecocokan. Tanpa ini, kata satuan/keterangan seperti "karung" (nama di
+  // sheet: "Beras 1 Krng =50kg") atau "sisanya" membuat barang yang jelas
+  // disebut jadi tidak ditemukan sama sekali.
+  // Kata dianggap "nama barang" kalau muncul di daftar acuan. Untuk pertanyaan
+  // soal bulan lalu, acuannya katalog bulan berjalan — supaya "ayam cut 4" tetap
+  // dikenali sebagai nama utuh walau bulan itu belum punya barangnya.
+  const ref = (refItems && refItems.length) ? refItems : data.items;
+  const nameToks = [];
+  for (let t = 0; t < toks.length; t++) {
+    for (let i = 0; i < ref.length; i++) {
+      if (String(ref[i].name || "").toLowerCase().indexOf(toks[t]) !== -1) {
+        nameToks.push(toks[t]);
+        break;
+      }
+    }
+  }
+  const used = nameToks.length ? nameToks : toks;
+
+  const normQ = used.join(" ");
   const scored = [];
   for (let i = 0; i < data.items.length; i++) {
     const it = data.items[i];
     const name = String(it.name || "").toLowerCase();
     const normName = name.replace(/[^a-z0-9]+/g, " ").trim();
     let hit = 0;
-    for (let t = 0; t < toks.length; t++) {
-      if (name.indexOf(toks[t]) !== -1) hit++;
+    for (let t = 0; t < used.length; t++) {
+      if (name.indexOf(used[t]) !== -1) hit++;
     }
     if (!hit) continue;
     scored.push({
@@ -2711,7 +2730,7 @@ function _aiFindItems_(data, question) {
 
   // Kalau pertanyaan menyebut 2 kata atau lebih, barang harus cocok minimal 2.
   // Tanpa ini "ayam cut 4" ikut menjaring "Ayam Kampung" hanya karena "ayam".
-  const minHit = toks.length >= 2 ? 2 : 1;
+  const minHit = used.length >= 2 ? 2 : 1;
   const pool = scored.filter(function (s) { return s.strong || s.score >= minHit; });
   if (!pool.length) return [];
 
@@ -2946,7 +2965,54 @@ function _aiRangeFacts_(question, range, months, topN) {
         ? rs.rows.slice(0, n).map(function (r) { return r.name + " " + _aiNum_(r.out) + " " + r.unit; }).join(", ")
         : "tidak ada mutasi keluar"));
     blocks.push(lines.join("\n"));
-    built.push({ label: lp.label, rangeLabel: rl, rows: rs.rows, totalOut: rs.totalOut, totalIn: rs.totalIn, missing: false, to: to });
+    built.push({ label: lp.label, rangeLabel: rl, rows: rs.rows, totalOut: rs.totalOut, totalIn: rs.totalIn, missing: false, to: to, data: lp.data });
+  }
+
+  // Kalau pengguna menyebut barang tertentu, tampilkan angka barang ITU di
+  // setiap periode. Daftar "5 terbesar" belum tentu memuat barangnya, dan
+  // tanpa blok ini model menjawab "tidak ada data" untuk barang yang ada.
+  // Cari barangnya di SEMUA periode, bukan cuma periode pertama: barang bisa
+  // saja tidak ada di bulan berjalan tapi ada di bulan lalu (atau sebaliknya).
+  const refAll = [];
+  for (let ri = 0; ri < built.length; ri++) {
+    if (!built[ri].data) continue;
+    for (let rj = 0; rj < built[ri].data.items.length; rj++) refAll.push(built[ri].data.items[rj]);
+  }
+
+  const asked = [];
+  for (let bi = 0; bi < built.length; bi++) {
+    if (!built[bi].data) continue;
+    const found = _aiFindItems_(built[bi].data, question, refAll);
+    for (let fi = 0; fi < found.length; fi++) {
+      if (!asked.some(function (x) { return x.name === found[fi].name; })) asked.push(found[fi]);
+    }
+    if (asked.length >= 2) break;
+  }
+  {
+    if (asked.length) {
+      const detail = ["BARANG YANG DITANYA (angka per periode):"];
+      for (let i = 0; i < Math.min(asked.length, 2); i++) {
+        const it = asked[i];
+        const per = [];
+        for (let k = 0; k < built.length; k++) {
+          const b = built[k];
+          if (!b.data) { per.push(b.label + ": tab bulan itu belum ada"); continue; }
+          let found = null;
+          for (let y = 0; y < b.data.items.length; y++) {
+            if (b.data.items[y].name === it.name) { found = b.data.items[y]; break; }
+          }
+          if (!found) { per.push(b.label + ": barang tidak ada di tab bulan itu"); continue; }
+          const rr = _aiRangeRows_(b.data, rg.from, b.to || rg.to);
+          let rrow = null;
+          for (let x = 0; x < rr.rows.length; x++) if (rr.rows[x].name === it.name) { rrow = rr.rows[x]; break; }
+          per.push(b.label + ": OUT " + _aiNum_(rrow ? rrow.out : 0) + " " + it.unit +
+            " | IN " + _aiNum_(rrow ? rrow.inQty : 0) + " " + it.unit +
+            " | stok akhir " + _aiNum_(found.stock) + " " + it.unit);
+        }
+        detail.push(it.name + " → " + per.join(" ; "));
+      }
+      blocks.push(detail.join("\n"));
+    }
   }
 
   // ── Blok perbandingan (kalau lebih dari satu periode) ──
@@ -3067,17 +3133,21 @@ function _aiFacts_(question, hintTopic) {
 
   // Pertanyaan lanjutan sering tidak menyebut nama barang ("kapan mulai minus?").
   // Urutan: cari dari pertanyaan dulu; kalau kosong, pakai topik yang sedang dibahas.
-  let matched = _aiFindItems_(data, question);
-  if (!matched.length && hintTopic) matched = _aiFindItems_(data, String(hintTopic));
+  // Katalog bulan berjalan dipakai sebagai acuan nama barang, dan untuk
+  // memberi catatan kalau barangnya cuma ada di bulan ini.
+  let curData = null;
+  if (!isCurrent) {
+    try { curData = _aiSheetData_(); } catch (e) { curData = null; }
+  }
+  const refItems = curData ? curData.items : null;
 
-  // Kalau barangnya tidak ada di tab periode itu, cek bulan berjalan. Sering
-  // terjadi barang baru didaftarkan bulan ini, lalu saat ditanya soal bulan
-  // lalu Mirim menjawab "tidak ada di database" padahal barangnya ada.
+  let matched = _aiFindItems_(data, question, refItems);
+  if (!matched.length && hintTopic) matched = _aiFindItems_(data, String(hintTopic), refItems);
+
   let crossMonthNote = "";
   if (!matched.length && !isCurrent) {
     try {
-      const curData = _aiSheetData_();
-      const curMatch = _aiFindItems_(curData, question);
+      const curMatch = curData ? _aiFindItems_(curData, question) : [];
       if (curMatch.length) {
         crossMonthNote = "\nCATATAN: barang " + curMatch.map(function (x) { return x.name; }).join(", ") +
           " TIDAK ADA di tab " + periodLabel + ", tetapi ADA di bulan berjalan (" +
