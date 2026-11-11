@@ -142,7 +142,10 @@ console.log("\n=== 2. Mode ringkasan (pertanyaan umum) ===");
   const facts = vm.runInContext("_aiFacts_", ctx)("barang apa yang kritis dan berapa nilai stok bulan ini");
   ok("mode = ringkasan", facts.mode === "ringkasan", facts.mode);
   ok("memuat nilai aset", /Nilai stok \(aset\): Rp12\.500\.000/.test(facts.text), facts.text);
-  ok("memuat daftar minus", /Barang stok MINUS: 1/.test(facts.text), facts.text.split("\n")[4]);
+  ok("memuat daftar minus", /Barang stok MINUS \(stok di bawah 0\): 1 barang/.test(facts.text), facts.text.split("\n")[4]);
+  ok("minus punya total qty & nilai", /total qty minus [0-9]/.test(facts.text) && /total nilai minus Rp/.test(facts.text));
+  ok("ada daftar stok terbanyak", /5 stok TERBANYAK \(paling banyak\):/.test(facts.text));
+  ok("ada daftar stok terendah", /5 stok TERENDAH \(paling sedikit\):/.test(facts.text));
   ok("memuat agregat divisi", /Divisi KITCHEN: 2 barang/.test(facts.text));
 }
 

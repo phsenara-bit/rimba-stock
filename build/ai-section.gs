@@ -16,7 +16,7 @@ const AI_CACHE_SECONDS = 600;     // jawaban sama dalam 10 menit tidak memanggil
 const AI_MAX_QUESTION = 300;
 const AI_MUTASI_SCAN = 400;       // baris log mutasi terakhir yang dibaca
 const AI_MUTASI_ROWS = 12;        // baris mutasi per barang yang dikirim ke model
-const AI_VER = "mirim-11";         // naikkan saat prompt/format fakta berubah → cache lama gugur
+const AI_VER = "mirim-12";         // naikkan saat prompt/format fakta berubah → cache lama gugur
 
 const AI_MONTHS = {
   januari: 1, februari: 2, maret: 3, april: 4, mei: 5, juni: 6,
@@ -854,7 +854,15 @@ function _aiFacts_(question, hintTopic) {
   } else {
     const stats = data.stats || {};
     const negative = data.items.filter(function (x) { return Number(x.stock) < 0; });
+    // "berapa total minus" butuh angka yang bisa dijumlah, bukan cuma jumlah barang.
+    let negQty = 0, negValue = 0;
+    for (let nz = 0; nz < negative.length; nz++) {
+      const nq = Math.abs(Number(negative[nz].stock) || 0);
+      negQty += nq;
+      negValue += nq * (Number(negative[nz].price) || 0);
+    }
     const low = data.items.slice().sort(function (a, b) { return Number(a.stock) - Number(b.stock); }).slice(0, 5);
+    const high = data.items.slice().sort(function (a, b) { return Number(b.stock) - Number(a.stock); }).slice(0, 5);
 
     const perDiv = {};
     for (let i = 0; i < data.items.length; i++) {
@@ -873,9 +881,12 @@ function _aiFacts_(question, hintTopic) {
     lines.push("Jumlah barang: " + (stats.totalItems || data.items.length));
     lines.push("Nilai stok (aset): " + _aiRupiah_(stats.totalNilaiStokAset));
     lines.push("Nilai masuk " + istilah + ": " + _aiRupiah_(stats.totalRupiahMasuk) + " | nilai keluar: " + _aiRupiah_(stats.totalRupiahKeluar));
-    lines.push("Barang stok MINUS: " + negative.length +
-      (negative.length ? " (" + negative.slice(0, 5).map(function (x) { return x.name + " " + _aiNum_(x.stock); }).join(", ") + ")" : ""));
-    lines.push("5 stok terendah: " + low.map(function (x) { return x.name + " " + _aiNum_(x.stock) + " " + x.unit; }).join(", "));
+    lines.push("Barang stok MINUS (stok di bawah 0): " + negative.length + " barang" +
+      " | total qty minus " + _aiNum_(negQty) +
+      " | total nilai minus " + _aiRupiah_(negValue) +
+      (negative.length ? " | " + negative.slice(0, 5).map(function (x) { return x.name + " " + _aiNum_(x.stock) + " " + x.unit; }).join(", ") : ""));
+    lines.push("5 stok TERENDAH (paling sedikit): " + low.map(function (x) { return x.name + " " + _aiNum_(x.stock) + " " + x.unit; }).join(", "));
+    lines.push("5 stok TERBANYAK (paling banyak): " + high.map(function (x) { return x.name + " " + _aiNum_(x.stock) + " " + x.unit; }).join(", "));
     for (const k in perDiv) {
       lines.push("Divisi " + k + ": " + perDiv[k].count + " barang, nilai " + _aiRupiah_(perDiv[k].nilai) + ", minus " + perDiv[k].minus);
     }
@@ -911,9 +922,12 @@ function _aiFacts_(question, hintTopic) {
 function _aiPrompt_(facts, question, history, lastTopic) {
   const sys =
     "Kamu Mirim, asisten stok restoran Rimba Alam. " +
-    "Gaya bicara: ramah, hangat, ceria, hidup seperti rekan kerja yang helpful. " +
+    "Gaya bicara: hangat dan ceria seperti agen staf yang sedang melayani, TANPA sapaan pembuka. " +
     "Pakai bahasa Indonesia santai tapi sopan. Boleh 1-2 emoji yang relevan (jangan berlebihan, jangan tiap kalimat). " +
-    "Jawaban maksimal 4 kalimat pendek, langsung ke inti, tanpa pembukaan panjang.\n" +
+    "Jawaban maksimal 4 kalimat pendek.\n" +
+    "LARANGAN PEMBUKA: jangan pernah memulai jawaban dengan 'Halo', 'Hai', 'Hai kak', 'Halo Mirim di sini', 'Aduh', 'Maaf banget ya', " +
+    "atau sapaan/basa-basi apa pun. Kalimat PERTAMA harus sudah berisi jawabannya. Contoh benar: 'Stok terbanyak bulan ini Ayam Kampung, 38 EKOR.'\n" +
+    "Jangan menutup dengan menawarkan daftar bantuan alternatif ('kalau mau, aku bisa infoin ...'). Cukup jawab yang ditanya.\n" +
     "ATURAN KETAT:\n" +
     "1. Kamu menjawab SEMUA pertanyaan yang jawabannya ada di FAKTA atau bisa dihitung dari FAKTA. Itu termasuk: stok terkini, riwayat mutasi, nilai aset, " +
     "harga satuan, daftar/katalog barang, jumlah barang, nama divisi/kategori, barang kritis, kenapa minus, siapa yang input, catatan/alasan input, " +
@@ -937,7 +951,11 @@ function _aiPrompt_(facts, question, history, lastTopic) {
     "12. Kalau FAKTA memuat blok PERBANDINGAN, jawab dengan membandingkan angkanya: sebut barang terbanyak di masing-masing periode, lalu siapa yang naik dan siapa yang turun beserta selisihnya. " +
     "Ini pertanyaan yang sah — jangan menolak dan jangan bilang di luar topik stok.\n" +
     "13. Rentang tanggal (mis. 'tanggal 1-7') sudah dihitung di FAKTA. Jawab langsung pakai angka itu; jangan bilang tidak bisa dihitung per tanggal.\n" +
-    "14. Kalau satu periode datanya belum ada, sebutkan periode mana yang kosong, lalu tetap jawab periode yang ada datanya.";
+    "14. Kalau satu periode datanya belum ada, sebutkan periode mana yang kosong, lalu tetap jawab periode yang ada datanya.\n" +
+    "15. 'stok terbanyak'/'paling banyak'/'tertinggi' → pakai baris '5 stok TERBANYAK'. 'stok terendah'/'paling sedikit' → baris '5 stok TERENDAH'. " +
+    "Jangan menjawab pertanyaan stok terbanyak/terendah dengan nilai aset.\n" +
+    "16. Pertanyaan 'total minus', 'berapa minus', 'yang minus', 'stok minus' → pakai baris 'Barang stok MINUS' (jumlah barang, total qty minus, total nilai minus). " +
+    "'Nilai stok (aset)' adalah total nilai seluruh persediaan — itu BUKAN jawaban untuk pertanyaan minus. Jangan menyebut aset kalau yang ditanya minus.";
 
   let histBlock = "";
   if (Array.isArray(history) && history.length) {

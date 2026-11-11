@@ -65,9 +65,9 @@ const OKT = buildMonth("Okt 2026", 10, {
   "Beras 1 Krng =50kg": { unit: "KRNG", out: { 1: 3, 10: 2 }, stock: 7 }
 });
 const NOV = buildMonth("Nov 2026", 11, {
-  "Lontong": { unit: "PCS", out: { 1: 50, 4: 45, 7: 55, 9: 40 } },
+  "Lontong": { unit: "PCS", out: { 1: 50, 4: 45, 7: 55, 9: 40 }, stock: 45 },
   "Ayam Cut 4": { unit: "KG", out: { 2: 12, 6: 15, 10: 9 }, in: { 3: 30 } },
-  "Ayam Kampung": { unit: "EKOR", out: { 5: 18 } },
+  "Ayam Kampung": { unit: "EKOR", out: { 5: 18 }, stock: -53, price: 44000 },
   "Minyak Goreng @2000ml": { unit: "LITER", out: { 3: 4, 7: 3 }, stock: 12 },
   "Beras 1 Krng =50kg": { unit: "KRNG", out: { 2: 2, 8: 3 }, stock: 7 }
 });
@@ -101,6 +101,8 @@ const ask = (q) => {
 };
 
 const TOLAK = /di luar jangkauan|di luar topik|di luar konteks|tidak bisa bantu|bukan wewenang/i;
+// Mirim tidak boleh membuka dengan sapaan — harus langsung ke inti seperti agen.
+const GREET = /^\s*(halo|hai|hi|hello|selamat|aduh|maaf|oke|baik|tentu)\b/i;
 
 const CASES = [
   { q: "lontong bulan oktober berapa keluar?", mustAnswer: true, want: /lontong/i },
@@ -110,6 +112,8 @@ const CASES = [
   { q: "stok ayam cut 4 bulan lalu berapa?", mustAnswer: true, want: /ayam cut 4/i },
   { q: "beras berapa karung sisanya sekarang?", mustAnswer: true, want: /beras/i },
   { q: "minyak goreng perbandingan bulan ini dan bulan lalu berapa?", mustAnswer: true, want: /minyak goreng/i },
+  { q: "barang dengan stok terbanyak bulan ini apa?", mustAnswer: true, want: /lontong/i, wantNot: /belum tercatat|belum ada/i },
+  { q: "berapa total minus bulan ini?", mustAnswer: true, want: /ayam kampung|minus/i, wantNot: /nilai aset|total aset/i },
   { q: "resep ayam bakar enak gimana?", mustAnswer: false }
 ];
 
@@ -124,7 +128,9 @@ for (const c of CASES) {
   console.log("A : " + r.answer);
 
   if (c.mustAnswer) {
-    if (TOLAK.test(r.answer)) { console.log("  ❌ MENOLAK padahal harus dijawab"); bad++; }
+    if (GREET.test(r.answer)) { console.log("  ❌ ADA SAPAAN PEMBUKA (" + (r.answer.match(GREET) || [""])[0] + ")"); bad++; }
+    else if (c.wantNot && c.wantNot.test(r.answer)) { console.log("  ❌ jawaban salah arah"); bad++; }
+    else if (TOLAK.test(r.answer)) { console.log("  ❌ MENOLAK padahal harus dijawab"); bad++; }
     else if (c.want && !c.want.test(r.answer)) { console.log("  ⚠️  jawaban tidak menyebut barang yang ditanya"); bad++; }
     else console.log("  ✅ dijawab");
   } else {
