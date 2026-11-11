@@ -209,6 +209,19 @@ console.log("\n=== Frontend: gabung riwayat lokal + server ===");
     ok("transaksi offline lokal tidak hilang", all.some(t => t.id === "TXN-9"), all.map(t => t.id));
     ok("ID sama tidak diduplikasi", all.filter(t => t.id === "TXN-1").length === 1, all.map(t => t.id));
     ok("urutan terbaru di atas", all[0].id === "TXN-9", all.map(t => t.id));
+
+    // Kasus urutan: transaksi lokal baru di hari yang sama dengan entri sheet
+    // tidak boleh "turun" ke bawah entri sheet yang jamnya lebih pagi.
+    const ctx3 = vm.createContext(Object.assign({}, sandbox, {}));
+    vm.runInContext(src + "\nthis.__ds = DataService;", ctx3, { filename: "DataService.js" });
+    const ds3 = ctx3.__ds;
+    ds3._mergeTransactions([
+      { id: "S-1", date: "2026-11-11", time: "09:00:00", staff: "Ragil", qty: 1, type: "OUT" },
+      { id: "S-2", date: "2026-11-11", time: "08:00:00", staff: "Rey", qty: 1, type: "OUT" }
+    ]);
+    const urut = ds3.getTransactions(10).map(t => t.id);
+    ok("entri lokal baru di atas entri sheet hari yang sama", urut[0] === "TXN-9", urut);
+    ok("dua entri sheet tetap urut menurun", urut[1] === "S-1" && urut[2] === "S-2", urut);
   }
 }
 
