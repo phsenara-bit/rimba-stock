@@ -11970,7 +11970,9 @@ const AuthService = (() => {
     const u = _getSession();
     if (!u) return false;
     const un = (u.username || "").toLowerCase();
-    return u.role === "admin" || u.role === "superadmin" || un === "satian";
+    // "owner" wajib ikut: tanpanya akun owner dianggap staf, sehingga
+    // getAllowedDivisions() menyempit dan input BAR/PASTRY ditolak.
+    return u.role === "admin" || u.role === "superadmin" || u.role === "owner" || un === "satian";
   }
 
   function isAdminOnly() {
@@ -11997,7 +11999,13 @@ const AuthService = (() => {
 
   function getUserDivision() {
     const u = _getSession();
-    return u ? (u.division || (u.role === "admin" ? "ADMIN" : "KITCHEN")) : "KITCHEN";
+    if (!u) return "KITCHEN";
+    const un = (u.username || "").toLowerCase();
+    // Akun privileged memegang semua kategori. Kalau memakai divisi mentah dari
+    // sheet, akun admin/owner ber-divisi "KITCHEN" menampilkan badge Kitchen
+    // padahal boleh input semua — itu yang dilaporkan sebagai "kategorinya kitchen".
+    if (u.role === "admin" || u.role === "superadmin" || u.role === "owner" || un === "satian") return "ADMIN";
+    return u.division || "KITCHEN";
   }
 
   /**
@@ -12008,7 +12016,9 @@ const AuthService = (() => {
     if (!u) return false;
     const un = (u.username || "").toLowerCase();
     // Superadmin / Owner / Admin memiliki akses penuh ke seluruh divisi
-    if (u.role === "admin" || u.role === "superadmin" || un === "satian" || u.division === "ADMIN" || u.division === "ALL") {
+    // Pakai isAdmin() supaya daftar role privileged tidak bercabang di 2 tempat
+    // (dulu di sini "owner" tidak ikut, sehingga owner hanya dapat KITCHEN).
+    if (isAdmin() || u.division === "ADMIN" || u.division === "ALL") {
       return true;
     }
     const cleanItemDiv = (itemDiv || "").toUpperCase();
@@ -12035,7 +12045,9 @@ const AuthService = (() => {
     if (!u) return [];
     const un = (u.username || "").toLowerCase();
     // Owner & Admin mendapatkan seluruh divisi
-    if (u.role === "admin" || u.role === "superadmin" || un === "satian" || u.division === "ADMIN" || u.division === "ALL") {
+    // Pakai isAdmin() supaya daftar role privileged tidak bercabang di 2 tempat
+    // (dulu di sini "owner" tidak ikut, sehingga owner hanya dapat KITCHEN).
+    if (isAdmin() || u.division === "ADMIN" || u.division === "ALL") {
       return ["KITCHEN", "BAR", "PASTRY", "LAINNYA"];
     }
     if (Array.isArray(u.divisions) && u.divisions.length > 0) {
