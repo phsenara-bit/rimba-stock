@@ -1,2 +1,3 @@
 *.bak-*
 gas-v3.2-pengguna-*.js
+node_modules/

@@ -13294,7 +13294,7 @@ const App = (() => {
       return;
     }
 
-    const today = _localYmd();
+    const today = DataService.localDate();
     const userDiv = AuthService.getUserDivision();
     const canAll = AuthService.isAdmin() || userDiv === "ADMIN";
     const allowedText = canAll
@@ -13639,7 +13639,7 @@ const App = (() => {
     const willBeNegative = (txnType === "OUT" || txnType === "SPOIL") && (qty > availableStock);
     const deficitStock = Math.round((availableStock - qty) * 1000) / 1000;
 
-    const date = document.getElementById("inputDate")?.value || _localYmd();
+    const date = document.getElementById("inputDate")?.value || DataService.localDate();
     const currentUser = AuthService.getCurrentUser();
     const staff = (currentUser && currentUser.name) ? currentUser.name : (document.getElementById("inputStaff")?.value.trim() || "Staff");
     const notes = document.getElementById("inputNotes")?.value.trim() || "-";
@@ -13763,15 +13763,22 @@ const App = (() => {
     const x = d || new Date();
     return x.getFullYear() + "-" + ("0" + (x.getMonth() + 1)).slice(-2) + "-" + ("0" + x.getDate()).slice(-2);
   }
-  const _todayIso = _localIsoDate();
   let historyFilter = "ALL";
-  let historyStartDate = _todayIso;
-  let historyEndDate = _todayIso;
+  // Tanggal filter sengaja dibiarkan kosong sampai render pertama. Dulu nilai
+  // awalnya "hari ini" dan renderHistory() mengisi ulang setiap kali kedua
+  // tanggal kosong — akibatnya pilihan "Semua" (tanggal kosong) langsung
+  // ditimpa jadi hari ini pada render berikutnya (sync latar / buka tab lagi),
+  // sehingga riwayat tanggal lain tampak kosong untuk semua tipe.
+  let historyStartDate = "";
+  let historyEndDate = "";
+  let historyDateTouched = false;
   let historyStaff = "ALL";
 
   function renderHistory() {
     const todayStr = _localIsoDate();
-    if (!historyStartDate && !historyEndDate) {
+    // Selama user belum menyentuh filter tanggal, default selalu "hari ini"
+    // menurut jam perangkat saat ini — bukan tanggal saat halaman dimuat.
+    if (!historyDateTouched) {
       historyStartDate = todayStr;
       historyEndDate = todayStr;
     }
@@ -13868,6 +13875,9 @@ const App = (() => {
     const today = new Date();
     const todayIso = _localIsoDate(today);
 
+    // Pilihan user mengikat: render berikutnya tidak boleh menimpa tanggal.
+    historyDateTouched = true;
+
     if (preset === "TODAY") {
       historyStartDate = todayIso;
       historyEndDate = todayIso;
@@ -13900,6 +13910,7 @@ const App = (() => {
   function handleHistoryDateChange() {
     const startInput = document.getElementById("histStartDate");
     const endInput = document.getElementById("histEndDate");
+    historyDateTouched = true;
     historyStartDate = startInput ? startInput.value : "";
     historyEndDate = endInput ? endInput.value : "";
     document.querySelectorAll(".hist-date-chip").forEach(c => c.classList.remove("active"));

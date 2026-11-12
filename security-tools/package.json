@@ -1,0 +1,11 @@
+{
+  "name": "rimba-stock-security-tools",
+  "private": true,
+  "description": "Suite tes Node untuk Rimba Stock (gate, fetch, render DOM).",
+  "scripts": {
+    "test": "node test_render_pages.js && node test_riwayat_tanggal.js && node test_warna_tipe.js"
+  },
+  "devDependencies": {
+    "jsdom": "^26.0.0"
+  }
+}
