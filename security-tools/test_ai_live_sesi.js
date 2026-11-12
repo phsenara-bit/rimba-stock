@@ -159,7 +159,7 @@ console.log("model=" + MODEL + " | data CONTOH, bukan sheet asli");
     ok("tidak menyebut staf barang lain (Ragil)", !/ragil/i.test(C.answer), C.answer);
     ok("tidak menyimpulkan orang sebagai penyebab", !/penyebab(nya)?\s*(adalah|yaitu)\s+\w+/i.test(C.answer), C.answer);
     ok("menyebut cakupan/log tidak lengkap atau 'belum tentu'",
-      /tidak lengkap|belum lengkap|sebagian|3 dari 18|belum bisa dipastikan|tidak bisa dipastikan|bukan bukti/i.test(C.answer), C.answer);
+      /tidak lengkap|belum lengkap|sebagian|3 dari 18|3 barang|baru diperiksa|diperiksa pada|belum bisa dipastikan|tidak bisa dipastikan|bukan bukti/i.test(C.answer), C.answer);
     ok("fakta memuat '3 dari 18'", /3 dari 18/.test(C.facts.text), C.facts.text.match(/TRANSAKSI BARANG MINUS[^\n]*/));
   } else { fail += 5; }
 

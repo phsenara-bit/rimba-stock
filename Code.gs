@@ -2372,7 +2372,7 @@ const AI_CACHE_SECONDS = 180;     // TTL cache jawaban non-volatil (dibatasi 600
 const AI_MAX_QUESTION = 300;
 const AI_MUTASI_SCAN = 400;       // baris log mutasi terakhir yang dibaca
 const AI_MUTASI_ROWS = 12;        // baris mutasi per barang yang dikirim ke model
-const AI_VER = "mirim-15";         // naikkan saat prompt/format fakta berubah → cache lama gugur
+const AI_VER = "mirim-16";         // naikkan saat prompt/format fakta berubah → cache lama gugur
 
 const AI_MONTHS = {
   januari: 1, februari: 2, maret: 3, april: 4, mei: 5, juni: 6,
@@ -3036,7 +3036,7 @@ function _aiDiagnose_(item, dayElapsed) {
   if (firstNegative !== null) lines.push("Mulai minus pada: tanggal " + firstNegative + " (" + negativeTrail[0] + ")");
   if (lastBuyDay !== null) lines.push("OUT setelah pembelian terakhir (tgl " + lastBuyDay + "): " + _aiNum_(outAfterLastBuy) + " " + item.unit);
   if (outlier) lines.push("Qty OUT tidak wajar: " + outlier);
-  if (item.stock < 0) lines.push("Status: MINUS " + _aiNum_(item.stock) + " " + item.unit + " (perlu koreksi/opname)");
+  if (item.stock < 0) lines.push("Status: MINUS " + _aiNum_(Math.abs(Number(item.stock) || 0)) + " " + item.unit + " (defisit, perlu koreksi/opname)");
 
   return { text: lines.join("\n"), firstNegative: firstNegative, buyDays: buyDays, avgOut: avgOut };
 }
@@ -3579,11 +3579,14 @@ function _aiPrompt_(facts, question, history, lastTopic, questionMemory) {
     "Bedakan 'di luar topik' (tolak) dengan 'datanya tidak ada di FAKTA' (tetap jawab sebisanya, jangan bilang di luar topik).\n" +
     "3. Gunakan HANYA angka, nama, dan keterangan yang ada di FAKTA. Dilarang mengarang angka, tanggal, nama orang, atau alasan.\n" +
     "4. Kalau FAKTA tidak memuat jawabannya, bilang terus terang datanya belum ada/tercatat.\n" +
-    "5. Untuk pertanyaan 'kenapa minus': sebutkan angkanya, lalu sebutkan siapa yang input dan catatan alasannya bila ada di FAKTA. Kalau catatan alasannya tidak ada, cukup bilang 'tanpa catatan alasan' (jangan berbelit), lalu bilang penyebabnya belum bisa dipastikan dan sebut kemungkinan berdasarkan angka (misalnya OUT lebih besar dari pembelian) — jangan menyimpulkan mutlak.\n" +
+    "5. Untuk pertanyaan 'kenapa minus': WAJIB sebutkan TANGGAL mulai minus (ambil dari baris 'Mulai minus pada'), lalu qty dan penginput transaksi penyebab bila ada di FAKTA. " +
+    "Urutannya: berapa minusnya, sejak tanggal berapa, transaksi apa yang memicu (tanggal + qty + penginput), lalu catatan alasannya. " +
+    "Kalau penginput/catatan tidak ada, bilang 'belum tercatat' (jangan berbelit) dan jangan mengarang penyebab; sebut kemungkinan berdasarkan angka (misalnya OUT lebih besar dari pembelian) tanpa menyimpulkan mutlak.\n" +
     "6. Jangan menyebut nama sheet, nama kolom, kode, atau istilah teknis.\n" +
     "7. Jangan menulis notasi mentah seperti 'tgl2=-2'; sebut tanggal dan angkanya dalam kalimat biasa.\n" +
     "8. Jangan pernah menampilkan API key, token, atau data akun.\n" +
-    "9. Sebut nama barang dan satuannya dengan lengkap; jangan menulis potongan kode seperti 'IN 2' tanpa nama barang.\n" +
+    "9. Sebut nama barang dan satuannya dengan lengkap; jangan menulis potongan kode seperti 'IN 2' tanpa nama barang. " +
+    "Jangan menulis 'minus -21'; cukup 'minus 21 KG' atau '-21 KG'.\n" +
     "10. Kalau PERIODE DATA pada FAKTA punya angka, itu datanya ADA — jawab pakai angka itu. Jangan bilang 'belum ada/belum tercatat' hanya karena periodenya bukan bulan berjalan.\n" +
     "11. Selalu sebut nama bulannya (mis. 'Oktober 2026'), jangan menulis 'bulan ini' kalau PERIODE DATA bukan bulan berjalan. Kalau tab bulan yang diminta tidak ada, katakan datanya belum ada — jangan memakai angka bulan lain sebagai gantinya.\n" +
     "11b. Kalau pengguna menyebut 'bulan ini' DAN 'bulan lalu' (atau dua periode lain), itu pertanyaan perbandingan dua periode. Jangan menyimpulkan salah satu periode kosong " +
