@@ -339,7 +339,8 @@ console.log("\n=== 8. Atribusi barang minus ===");
   ok("menyebut jumlah barang minus yang sebenarnya", /18 barang/.test(teks), teks.split("\n").slice(0, 8));
   ok("menyatakan hanya sebagian yang diperiksa", /3 dari 18/.test(teks), teks.match(/TRANSAKSI BARANG MINUS[^\n]*/));
   ok("menyebut log bisa tidak lengkap", /tidak lengkap|belum lengkap/i.test(teks));
-  ok("penginput bukan bukti penyebab", /bukan bukti penyebab|tidak bisa ditentukan/i.test(teks));
+  ok("nama penginput disajikan apa adanya", /sebutkan apa adanya sebagai informasi/i.test(teks));
+  ok("sebab tidak dipastikan dari log", /penyebab minus belum bisa dipastikan/i.test(teks));
 
   const blok = (teks.match(/TRANSAKSI BARANG MINUS[\s\S]*?(?=\n\n|$)/) || [""])[0];
   ok("3 defisit terbesar yang diperiksa", /Ayam Kampung/.test(blok) && /Telur Ayam/.test(blok) && /Beras 1 Krng =50kg/.test(blok), blok);
@@ -348,7 +349,8 @@ console.log("\n=== 8. Atribusi barang minus ===");
   ok("barang tanpa log ditandai TIDAK TERCATAT", /Beras 1 Krng =50kg[\s\S]*TIDAK TERCATAT/.test(blok), blok);
 
   const prompt = vm.runInContext("_aiPrompt_", ctx)(facts, "siapa yang input?", [], "Barang stok MINUS");
-  ok("prompt melarang menyebut orang sebagai penyebab", /jangan (menyebut|menuduh).*penyebab|bukan penyebab/i.test(prompt), prompt.slice(-600));
+  ok("prompt menyuruh sebut nama penginput", /sebutkan nama penginput apa adanya/i.test(prompt), prompt.slice(-600));
+  ok("prompt melarang menyimpulkan sebab", /jangan menyimpulkan dia penyebab/i.test(prompt), prompt.slice(-600));
 }
 
 // ═══ 9. Satuan campuran tidak dijumlah jadi satu angka ═══════════════

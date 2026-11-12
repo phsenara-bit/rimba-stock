@@ -135,7 +135,9 @@ console.log("model=" + MODEL + " | data CONTOH, bukan sheet asli");
     ok("tidak menolak", !TOLAK.test(A.answer), A.answer);
     ok("menyebut periode Oktober (warisan memori)", /oktober|okt\b/i.test(A.answer), A.answer + " | facts=" + A.facts.period);
     ok("menjawab Beras, bukan barang lain", /beras/i.test(A.answer), A.answer);
-    ok("tidak bilang datanya belum ada", !/belum ada|tidak ada data|belum tercatat/i.test(A.answer), A.answer);
+    // "catatan penginput belum tercatat" itu jawaban yang BENAR — jangan dianggap
+    // "data kosong". Yang diuji: pertanyaan dijawab dengan angka stok.
+    ok("memberi angka stok, bukan mengaku kosong", /10\s*KRNG/i.test(A.answer), A.answer);
   } else { fail += 4; }
 
   console.log("\n=== B. Pertanyaan sekarang menang atas memori ===");
