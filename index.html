@@ -1029,6 +1029,21 @@ img { max-width: 100%; height: auto; }
 
 .txn-icon.in  { background: var(--success-bg); color: var(--success); }
 .txn-icon.out { background: var(--danger-bg);  color: var(--danger);  }
+/* Tiap tipe punya warna dasar sendiri supaya sekali lihat langsung kebaca:
+   masuk = hijau, keluar = merah, spoil = oranye, revisi = biru. */
+.txn-icon.spoil  { background: #fff3e0; color: #e65100; }
+.txn-icon.revisi { background: #e3f2fd; color: #1565c0; }
+.txn-icon.hapus  { background: #ffebee; color: #b71c1c; }
+
+.type-btn.type-spoil.active {
+  border-color: #e65100;
+  background: #fff3e0;
+  color: #e65100;
+}
+.type-btn.type-spoil:not(.active) {
+  border-color: #ffb74d;
+  color: #e65100;
+}
 
 .txn-body {
   flex: 1;
@@ -9232,6 +9247,34 @@ const DataService = (() => {
     return JSON.parse(JSON.stringify(obj));
   }
 
+  /** Tanggal hari ini menurut waktu LOKAL perangkat (bukan UTC). */
+  function _localYmd(d) {
+    const x = d || new Date();
+    return x.getFullYear() + "-" + ("0" + (x.getMonth() + 1)).slice(-2) + "-" + ("0" + x.getDate()).slice(-2);
+  }
+
+  /**
+   * Normalisasi tanggal transaksi ke "yyyy-MM-dd".
+   * Data bisa datang sebagai "2026-11-11", "2026-11-11T09:12:00",
+   * "2026-11-11 09:12:00", objek Date, atau "11/11/2026". Filter lama
+   * membandingkan string mentah, sehingga tanggal yang membawa jam
+   * ("2026-11-11T…" > "2026-11-11") selalu terbuang dari filter "Hari Ini".
+   */
+  function _txnDateIso(v) {
+    if (v === null || v === undefined || v === "") return "";
+    if (v && typeof v === "object" && typeof v.getTime === "function" && !isNaN(v.getTime())) {
+      return _localYmd(v);
+    }
+    const t = String(v).trim();
+    let m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (m) return m[1] + "-" + ("0" + m[2]).slice(-2) + "-" + ("0" + m[3]).slice(-2);
+    m = t.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (m) return m[3] + "-" + ("0" + m[2]).slice(-2) + "-" + ("0" + m[1]).slice(-2);
+    const d = new Date(t);
+    if (!isNaN(d.getTime())) return _localYmd(d);
+    return "";
+  }
+
   function parseQuantity(val) {
     if (val === null || val === undefined) return 0;
     if (typeof val === "number") return isNaN(val) ? 0 : val;
@@ -9500,7 +9543,7 @@ const DataService = (() => {
       itemName: item.name,
       type: data.type,
       qty: qty,
-      date: data.date || new Date().toISOString().split("T")[0],
+      date: _txnDateIso(data.date) || _localYmd(),
       time: new Date().toTimeString().slice(0, 8),
       staff: data.staff || "Staff",
       notes: effectiveNotes,
@@ -9724,11 +9767,13 @@ const DataService = (() => {
     }
 
     if (startDate) {
-      list = list.filter(t => t.date >= startDate);
+      const from = _txnDateIso(startDate);
+      list = list.filter(t => { const d = _txnDateIso(t.date); return d && from && d >= from; });
     }
 
     if (endDate) {
-      list = list.filter(t => t.date <= endDate);
+      const to = _txnDateIso(endDate);
+      list = list.filter(t => { const d = _txnDateIso(t.date); return d && to && d <= to; });
     }
 
     if (staff && staff !== "ALL") {
@@ -11168,7 +11213,7 @@ const DataService = (() => {
     const payload = {
       id: txn.id,
       timestamp: txn.date ? `${txn.date} ${new Date().toTimeString().split(" ")[0]}` : new Date().toISOString(),
-      date: txn.date || new Date().toISOString().split("T")[0],
+      date: _txnDateIso(txn.date) || _localYmd(),
       division: txn.division || "-",
       staffName: txn.staff || "-",
       itemId: txn.itemId,
@@ -11551,6 +11596,8 @@ const DataService = (() => {
     editTransaction,
     getTransactions,
     getFilteredTransactions,
+    localDate: _localYmd,
+    txnDate: _txnDateIso,
     fetchTransactions,
     _mergeTransactions,
     getStaffList,
@@ -13247,7 +13294,7 @@ const App = (() => {
       return;
     }
 
-    const today = new Date().toISOString().split("T")[0];
+    const today = _localYmd();
     const userDiv = AuthService.getUserDivision();
     const canAll = AuthService.isAdmin() || userDiv === "ADMIN";
     const allowedText = canAll
@@ -13298,7 +13345,7 @@ const App = (() => {
                   onclick="App.setTxnType('IN')">📥 MASUK</button>
           <button type="button" class="type-btn type-out ${txnType === 'OUT' ? 'active' : ''}" style="flex:1;"
                   onclick="App.setTxnType('OUT')">📤 KELUAR</button>
-          <button type="button" class="type-btn type-spoil ${txnType === 'SPOIL' ? 'active' : ''}" style="flex:1; background:${txnType === 'SPOIL' ? '#e65100' : 'transparent'}; color:${txnType === 'SPOIL' ? '#fff' : '#e65100'}; border:2px solid #e65100; font-weight:700;"
+          <button type="button" class="type-btn type-spoil ${txnType === 'SPOIL' ? 'active' : ''}" style="flex:1;"
                   onclick="App.setTxnType('SPOIL')">🗑️ SPOIL</button>
         </div>
       </div>
@@ -13592,7 +13639,7 @@ const App = (() => {
     const willBeNegative = (txnType === "OUT" || txnType === "SPOIL") && (qty > availableStock);
     const deficitStock = Math.round((availableStock - qty) * 1000) / 1000;
 
-    const date = document.getElementById("inputDate")?.value || new Date().toISOString().split("T")[0];
+    const date = document.getElementById("inputDate")?.value || _localYmd();
     const currentUser = AuthService.getCurrentUser();
     const staff = (currentUser && currentUser.name) ? currentUser.name : (document.getElementById("inputStaff")?.value.trim() || "Staff");
     const notes = document.getElementById("inputNotes")?.value.trim() || "-";
@@ -13891,7 +13938,7 @@ const App = (() => {
           <div class="empty-state-icon">📋</div>
           <div class="empty-state-text" style="font-weight:700; margin-bottom:6px;">Tidak ada transaksi untuk ${descText}</div>
           <p style="font-size:.8rem; color:var(--on-surface-variant); margin-bottom:12px;">
-            ${historyStartDate === new Date().toISOString().split("T")[0] ? 'Belum ada transaksi diinput hari ini.' : 'Coba ubah tanggal atau bersihkan filter pencarian.'}
+            ${historyStartDate === _localIsoDate() ? 'Belum ada transaksi diinput hari ini.' : 'Coba ubah tanggal atau bersihkan filter pencarian.'}
           </p>
           <div style="display:flex; justify-content:center; gap:8px;">
             <button type="button" class="btn btn-outline" style="font-size:.78rem; padding:6px 12px;" onclick="App.setHistoryDatePreset('MONTH')">📆 Cek Bulan Ini</button>
@@ -13928,17 +13975,17 @@ const App = (() => {
       typeBadge = `<span class="badge" style="background:#e0f2f1; color:#00695c; font-size:.68rem; margin-right:4px;">✨ Barang Baru</span>`;
     } else if (isEditItem) {
       icon = "🏷️";
-      iconClass = "out";
+      iconClass = "revisi";
       qtyDisplay = (txn.unitPrice > 0) ? DataService.formatRupiah(txn.unitPrice) : "Ubah";
-      typeBadge = `<span class="badge" style="background:#fff3e0; color:#e65100; font-size:.68rem; margin-right:4px;">🏷️ Ubah Info</span>`;
+      typeBadge = `<span class="badge" style="background:#e3f2fd; color:#1565c0; font-size:.68rem; margin-right:4px; font-weight:700;">🏷️ Revisi</span>`;
     } else if (isDeleteItem) {
       icon = "🗑️";
-      iconClass = "out";
+      iconClass = "hapus";
       qtyDisplay = "Hapus";
       typeBadge = `<span class="badge" style="background:#ffebee; color:#c62828; font-size:.68rem; margin-right:4px; font-weight:700;">🗑️ Dihapus</span>`;
     } else if (isSpoil) {
       icon = "🗑️";
-      iconClass = "out";
+      iconClass = "spoil";
       qtyDisplay = `-${DataService.parseQuantity(txn.qty).toLocaleString("id-ID", { maximumFractionDigits: 3 })}`;
       typeBadge = `<span class="badge" style="background:#fff3e0; color:#e65100; font-size:.68rem; margin-right:4px; font-weight:700;">🗑️ SPOIL</span>`;
     }
@@ -13984,9 +14031,9 @@ const App = (() => {
         </div>
 
         ${wasEdited ? `
-        <div style="background:#fff8e1; border-left:3px solid #f57f17; border-radius:4px; padding:4px 8px; font-size:.72rem; color:#5d4037; margin-top:2px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:4px;">
+        <div style="background:#e3f2fd; border-left:3px solid #1565c0; border-radius:4px; padding:4px 8px; font-size:.72rem; color:#0d47a1; margin-top:2px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:4px;">
           <span>✏️ <strong>Koreksi:</strong> dari <strong>${txn.originalQty}</strong> ke <strong>${txn.qty}</strong> (Diedit oleh: <strong>${esc(txn.editedBy)}</strong>)</span>
-          ${txn.editReason ? `<span style="font-style:italic; color:#795548;">"${esc(txn.editReason)}"</span>` : ''}
+          ${txn.editReason ? `<span style="font-style:italic; color:#1565c0;">"${esc(txn.editReason)}"</span>` : ''}
         </div>
         ` : ''}
       </div>
